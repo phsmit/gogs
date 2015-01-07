@@ -1,14 +1,20 @@
 package ssh
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/md5"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"golang.org/x/crypto/ssh"
 	"io"
-	"log"
+	"io/ioutil"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 )
 
 type Channel interface {
@@ -32,9 +38,11 @@ type ConnectionInfo struct {
 	Proxied bool
 }
 
-type Config struct {
+type Server struct {
 	Host               string
 	KeyFile            string
+	PubKeyFile         string
+	pubKey             ssh.PublicKey
 	AuthorizedKeyProxy AuthorizedKeysConfig
 	Callbacks          CallbackConfig
 }
@@ -42,7 +50,8 @@ type Config struct {
 type AuthorizedKeysConfig struct {
 	Enabled            bool
 	AuthorizedKeysFile string
-	key                ssh.PublicKey
+
+	m sync.Mutex
 }
 
 type CallbackConfig struct {
@@ -63,36 +72,7 @@ type CallbackConfig struct {
 	HandleConnection func(key, cmd string, channel Channel, info ConnectionInfo) (int, error)
 }
 
-type Server interface {
-	// Stop server and clean up (if necessary)
-	Stop()
-
-	// Notify server that key is now also acceptable
-	AddKey(key string) error
-	// Notify server that key is no longer valid
-	RemoveKey(key string)
-
-	// Ask the server to resync it's database (e.g. authorized keys file)
-	Resync()
-
-	// Get all keytypes this server supports for clients
-	KeyTypes() map[string]string
-}
-
-// Create an SSH server, start it and return it
-func NewServer(config Config) (Server, error) {
-	s := &server{config: config}
-	if err := s.start(); err != nil {
-		return nil, err
-	}
-	return s, nil
-}
-
-type server struct {
-	config Config
-}
-
-func handleChanReq(s *server, chanReq ssh.NewChannel, options map[string]string) {
+func handleChanReq(s *Server, chanReq ssh.NewChannel, options map[string]string) {
 
 	if chanReq.ChannelType() != "session" {
 		chanReq.Reject(ssh.Prohibited, "channel type is not a session")
@@ -101,14 +81,13 @@ func handleChanReq(s *server, chanReq ssh.NewChannel, options map[string]string)
 
 	ch, reqs, err := chanReq.Accept()
 	if err != nil {
-		log.Println("fail to accept channel request", err)
 		return
 	}
 	defer ch.Close()
 
 	req := <-reqs
 	if req.Type != "exec" {
-		ch.Write([]byte("request type '" + req.Type + "' is not 'exec'\r\n"))
+		ch.Write([]byte("This server does not provide shell access"))
 		return
 	}
 
@@ -116,7 +95,7 @@ func handleChanReq(s *server, chanReq ssh.NewChannel, options map[string]string)
 }
 
 // Payload: int: command size, string: command
-func handleExec(s *server, ch ssh.Channel, req *ssh.Request, options map[string]string) {
+func handleExec(s *Server, ch ssh.Channel, req *ssh.Request, options map[string]string) {
 	command := string(req.Payload[4:])
 
 	if p, has := options["proxy"]; has && p == "y" {
@@ -134,7 +113,7 @@ func handleExec(s *server, ch ssh.Channel, req *ssh.Request, options map[string]
 		}
 		fingerprint := md5.Sum(k.Marshal())
 
-		if key, err := s.config.Callbacks.GetKeyByFingerprint(fingerprint); err != nil {
+		if key, err := s.Callbacks.GetKeyByFingerprint(fingerprint); err != nil {
 			options["key"] = key
 		}
 	}
@@ -145,7 +124,7 @@ func handleExec(s *server, ch ssh.Channel, req *ssh.Request, options map[string]
 		return
 	}
 
-	_, err := s.config.Callbacks.HandleConnection(key, command, ch, ConnectionInfo{})
+	_, err := s.Callbacks.HandleConnection(key, command, ch, ConnectionInfo{})
 
 	if err != nil {
 		ch.Write([]byte(err.Error()))
@@ -156,20 +135,36 @@ func handleExec(s *server, ch ssh.Channel, req *ssh.Request, options map[string]
 
 }
 
-func (s *server) start() error {
-	if s.config.Callbacks.GetAllKeys == nil || s.config.Callbacks.GetKeyByFingerprint == nil || s.config.Callbacks.HandleConnection == nil {
+func (s *Server) Start() error {
+	if s.Callbacks.GetAllKeys == nil || s.Callbacks.GetKeyByFingerprint == nil || s.Callbacks.HandleConnection == nil {
 		return errors.New("All callbacks need to be not-nil")
 	}
 
+	pem, err := ioutil.ReadFile(s.KeyFile)
+	if err != nil {
+		return err
+	}
+
+	privKey, err := ssh.ParsePrivateKey(pem)
+	if err != nil {
+		return err
+	}
+
+	pubContent, err := ioutil.ReadFile(s.PubKeyFile)
+	if err != nil {
+		return err
+	}
+	pubKey, _, _, _, err := ssh.ParseAuthorizedKey(pubContent)
+
 	config := ssh.ServerConfig{
 		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-			if s.config.AuthorizedKeyProxy.Enabled {
-				if bytes.Equal(key.Marshal(), s.config.AuthorizedKeyProxy.key.Marshal()) {
+			if s.AuthorizedKeyProxy.Enabled {
+				if bytes.Equal(key.Marshal(), pubKey.Marshal()) {
 					return &ssh.Permissions{Extensions: map[string]string{"proxy": "y"}}, nil
 				}
 			}
 			fingerprint := md5.Sum(key.Marshal())
-			if k, err := s.config.Callbacks.GetKeyByFingerprint(fingerprint); err != nil {
+			if k, err := s.Callbacks.GetKeyByFingerprint(fingerprint); err != nil {
 				return &ssh.Permissions{Extensions: map[string]string{"key": k}}, nil
 			} else {
 				return nil, err
@@ -177,7 +172,9 @@ func (s *server) start() error {
 		},
 	}
 
-	socket, err := net.Listen("tcp", s.config.Host)
+	config.AddHostKey(privKey)
+
+	socket, err := net.Listen("tcp", s.Host)
 	if err != nil {
 		return err
 	}
@@ -189,11 +186,13 @@ func (s *server) start() error {
 				continue
 			}
 
-			sshConn, newChans, _, err := ssh.NewServerConn(conn, &config)
+			sshConn, newChans, requests, err := ssh.NewServerConn(conn, &config)
 			if err != nil {
 				continue
 			}
 			defer sshConn.Close()
+
+			ssh.DiscardRequests(requests)
 
 			//log.Println("Connection from", sshConn.RemoteAddr())
 			go func() {
@@ -206,27 +205,106 @@ func (s *server) start() error {
 	return nil
 }
 
-func (s *server) Stop() {
+// Stop server and clean up (if necessary)
+func (s *Server) Stop() {
+	if s.AuthorizedKeyProxy.Enabled {
+		s.AuthorizedKeyProxy.m.Lock()
+		defer s.AuthorizedKeyProxy.m.Unlock()
 
+		tmpFile := filepath.Join(filepath.Dir(s.AuthorizedKeyProxy.AuthorizedKeysFile), "authorized_keys.gogs.tmp")
+		f, err := os.OpenFile(tmpFile, os.O_RDWR, 0600)
+		if err != nil {
+			return
+		}
+
+		if origF, err := os.Open(s.AuthorizedKeyProxy.AuthorizedKeysFile); err == nil {
+			r := bufio.NewReader(origF)
+			for line, err := r.ReadBytes('\n'); err == nil; {
+				if !bytes.Contains(line, []byte("gogs")) || !bytes.Contains(line, []byte("serve")) {
+					f.Write(line)
+				}
+			}
+			origF.Close()
+		}
+		f.Close()
+		os.Rename(tmpFile, s.AuthorizedKeyProxy.AuthorizedKeysFile)
+	}
 }
 
-func (s *server) AddKey(key string) error {
-	if s.config.AuthorizedKeyProxy.Enabled {
-		// do something
+// Notify server that key is now also acceptable
+func (s *Server) AddKey(key string) error {
+	if s.AuthorizedKeyProxy.Enabled {
+		s.AuthorizedKeyProxy.m.Lock()
+		defer s.AuthorizedKeyProxy.m.Unlock()
+
+		tmpFile := filepath.Join(filepath.Dir(s.AuthorizedKeyProxy.AuthorizedKeysFile), "authorized_keys.gogs.tmp")
+		f, err := os.OpenFile(tmpFile, os.O_RDWR, 0600)
+		if err != nil {
+			return err
+		}
+
+		if pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(key)); err == nil {
+			f.WriteString(fmt.Sprintf("command=\"\" %s %s\n", md5.Sum(pubKey.Marshal()), ssh.MarshalAuthorizedKey(pubKey)))
+		}
+
+		if origF, err := os.Open(s.AuthorizedKeyProxy.AuthorizedKeysFile); err == nil {
+			io.Copy(f, origF)
+		}
+		f.Close()
+		return os.Rename(tmpFile, s.AuthorizedKeyProxy.AuthorizedKeysFile)
 	}
 	return nil
 }
 
-func (s *server) RemoveKey(key string) {
-	if s.config.AuthorizedKeyProxy.Enabled {
+// Notify server that key is no longer valid
+func (s *Server) RemoveKey(key string) {
+	if s.AuthorizedKeyProxy.Enabled {
 		// do something
 	}
 }
 
-func (s *server) Resync() {
+// Ask the server to resync it's database (e.g. authorized keys file)
+func (s *Server) Resync() error {
+	if s.AuthorizedKeyProxy.Enabled {
+		s.AuthorizedKeyProxy.m.Lock()
+		defer s.AuthorizedKeyProxy.m.Unlock()
 
+		tmpFile := filepath.Join(filepath.Dir(s.AuthorizedKeyProxy.AuthorizedKeysFile), "authorized_keys.gogs.tmp")
+		f, err := os.OpenFile(tmpFile, os.O_RDWR, 0600)
+		if err != nil {
+			return err
+		}
+
+		for _, key := range s.Callbacks.GetAllKeys() {
+			if pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(key)); err == nil {
+				f.WriteString(fmt.Sprintf("command=\"\" %s %s\n", md5.Sum(pubKey.Marshal()), ssh.MarshalAuthorizedKey(pubKey)))
+			}
+		}
+
+		if origF, err := os.Open(s.AuthorizedKeyProxy.AuthorizedKeysFile); err == nil {
+			r := bufio.NewReader(origF)
+			for line, err := r.ReadBytes('\n'); err == nil; {
+				if !bytes.Contains(line, []byte("gogs")) || !bytes.Contains(line, []byte("serve")) {
+					f.Write(line)
+				}
+			}
+			origF.Close()
+		}
+		f.Close()
+		return os.Rename(tmpFile, s.AuthorizedKeyProxy.AuthorizedKeysFile)
+	}
+	return nil
 }
 
-func (s *server) KeyTypes() map[string]string {
+// Get all keytypes this server supports for clients
+func (s *Server) KeyTypes() map[string]string {
 	return nil
+}
+
+func ValidateKey(content string) (string, error) {
+	pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(content))
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(pubKey.Marshal()), nil
 }
