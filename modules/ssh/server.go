@@ -51,4 +51,8 @@ type Server interface {
 
 	// Get fingerprint of server
 	Fingerprint() string
+
+	// Handle the Gogs Serve command by validating it and passing it to the
+	// callback
+	//HandleGogsServeCommand() int
 }
