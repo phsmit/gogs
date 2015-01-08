@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"crypto/md5"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"golang.org/x/crypto/ssh"
@@ -12,9 +14,38 @@ import (
 	"io/ioutil"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
+)
+
+const (
+	KeyAlgoED25519 = "ssh-ed25519"
+)
+
+var (
+	ErrNoKey               = errors.New("No key found")
+	ErrKeyTypeNotSupported = errors.New("This keytype is not supported")
+	ErrKeyTooSmall         = errors.New("The size of this key is too small")
+)
+
+var (
+	internalKeyTypes = map[string]int{
+		ssh.KeyAlgoDSA:      1024,
+		ssh.KeyAlgoRSA:      2048,
+		ssh.KeyAlgoECDSA256: 256,
+		ssh.KeyAlgoECDSA384: 384,
+		ssh.KeyAlgoECDSA521: 521,
+	}
+	otherKeyTypes = map[string]int{
+		KeyAlgoED25519: 256,
+	}
+)
+
+var (
+	nonBase64 = regexp.MustCompile(`[^0-9a-zA-Z+=/\n\r]`)
 )
 
 type Channel interface {
@@ -43,6 +74,7 @@ type Server struct {
 	KeyFile            string
 	PubKeyFile         string
 	pubKey             ssh.PublicKey
+	keyTypes           map[string]int
 	AuthorizedKeyProxy AuthorizedKeysConfig
 	Callbacks          CallbackConfig
 }
@@ -135,6 +167,30 @@ func handleExec(s *Server, ch ssh.Channel, req *ssh.Request, options map[string]
 
 }
 
+func testKeytypeSshKeygen(keyType string) (bool, error) {
+	tmpFile, err := ioutil.TempFile("", "keytest")
+	if err != nil {
+		return false, err
+	}
+	tmpFile.Close()
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+	defer os.Remove(tmpPath + ".pub")
+
+	cmd := exec.Command("ssh-keygen", "-t", keyType, "-f", tmpPath, "-q")
+
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if bytes.HasPrefix(out, []byte("unknown key")) {
+			return false, nil
+		} else {
+			return false, err
+		}
+	} else {
+		return true, nil
+	}
+}
+
+// Start server
 func (s *Server) Start() error {
 	if s.Callbacks.GetAllKeys == nil || s.Callbacks.GetKeyByFingerprint == nil || s.Callbacks.HandleConnection == nil {
 		return errors.New("All callbacks need to be not-nil")
@@ -202,109 +258,221 @@ func (s *Server) Start() error {
 			}()
 		}
 	}()
+
+	if s.AuthorizedKeyProxy.Enabled {
+		// discover key types from ssh-keygen
+		s.keyTypes = map[string]int{}
+		for k, v := range internalKeyTypes {
+			// these keys are always supported, so don't need to be tested
+			s.keyTypes[k] = v
+		}
+		for k, v := range otherKeyTypes {
+			ok, err := testKeytypeSshKeygen(k)
+			if ok {
+				s.keyTypes[k] = v
+			}
+			if err != nil {
+				return err
+			}
+		}
+	} else {
+		s.keyTypes = internalKeyTypes
+	}
 	return nil
 }
 
 // Stop server and clean up (if necessary)
 func (s *Server) Stop() {
 	if s.AuthorizedKeyProxy.Enabled {
-		s.AuthorizedKeyProxy.m.Lock()
-		defer s.AuthorizedKeyProxy.m.Unlock()
+		s.AuthorizedKeyProxy.writeAuthorizedKeyFile([]string{}, true)
+	}
+}
 
-		tmpFile := filepath.Join(filepath.Dir(s.AuthorizedKeyProxy.AuthorizedKeysFile), "authorized_keys.gogs.tmp")
-		f, err := os.OpenFile(tmpFile, os.O_RDWR, 0600)
-		if err != nil {
-			return
+func parseKey(key string) (keyType []byte, fingerprint [md5.Size]byte, err error) {
+	rawKey, err := base64.StdEncoding.DecodeString(key)
+	if err != nil {
+		return
+	}
+
+	fingerprint = md5.Sum(rawKey)
+
+	if len(rawKey) < 4 {
+		err = errors.New("Invalid key")
+		return
+	}
+
+	l := int(binary.BigEndian.Uint32(rawKey))
+	rawKey = rawKey[4:]
+
+	if len(rawKey) < l {
+		err = errors.New("Invalid key")
+		return
+	}
+
+	keyType = rawKey[:l]
+	return
+}
+
+func (c *AuthorizedKeysConfig) writeAuthorizedKeyFile(newKeys []string, filterOld bool) error {
+	c.m.Lock()
+	defer c.m.Unlock()
+
+	tmpFile := filepath.Join(filepath.Dir(c.AuthorizedKeysFile), "authorized_keys.gogs.tmp")
+	f, err := os.OpenFile(tmpFile, os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+
+	for _, key := range newKeys {
+		if keyType, fingerprint, err := parseKey(key); err != nil {
+			f.WriteString(fmt.Sprintf("command=\"%s\" %s %s\n", fingerprint, keyType, key))
 		}
+	}
 
-		if origF, err := os.Open(s.AuthorizedKeyProxy.AuthorizedKeysFile); err == nil {
+	if origF, err := os.Open(c.AuthorizedKeysFile); err == nil {
+		if filterOld {
 			r := bufio.NewReader(origF)
-			for line, err := r.ReadBytes('\n'); err == nil; {
+			for {
+				line, err := r.ReadBytes('\n')
+
 				if !bytes.Contains(line, []byte("gogs")) || !bytes.Contains(line, []byte("serve")) {
 					f.Write(line)
 				}
+
+				if err != nil {
+					break
+				}
 			}
-			origF.Close()
+		} else {
+			io.Copy(f, origF)
 		}
-		f.Close()
-		os.Rename(tmpFile, s.AuthorizedKeyProxy.AuthorizedKeysFile)
+		origF.Close()
 	}
+
+	f.Close()
+	return os.Rename(tmpFile, c.AuthorizedKeysFile)
+
 }
 
 // Notify server that key is now also acceptable
 func (s *Server) AddKey(key string) error {
 	if s.AuthorizedKeyProxy.Enabled {
-		s.AuthorizedKeyProxy.m.Lock()
-		defer s.AuthorizedKeyProxy.m.Unlock()
-
-		tmpFile := filepath.Join(filepath.Dir(s.AuthorizedKeyProxy.AuthorizedKeysFile), "authorized_keys.gogs.tmp")
-		f, err := os.OpenFile(tmpFile, os.O_RDWR, 0600)
-		if err != nil {
-			return err
-		}
-
-		if pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(key)); err == nil {
-			f.WriteString(fmt.Sprintf("command=\"\" %s %s\n", md5.Sum(pubKey.Marshal()), ssh.MarshalAuthorizedKey(pubKey)))
-		}
-
-		if origF, err := os.Open(s.AuthorizedKeyProxy.AuthorizedKeysFile); err == nil {
-			io.Copy(f, origF)
-		}
-		f.Close()
-		return os.Rename(tmpFile, s.AuthorizedKeyProxy.AuthorizedKeysFile)
+		return s.AuthorizedKeyProxy.writeAuthorizedKeyFile([]string{key}, false)
 	}
 	return nil
 }
 
 // Notify server that key is no longer valid
 func (s *Server) RemoveKey(key string) {
-	if s.AuthorizedKeyProxy.Enabled {
-		// do something
-	}
+	// Removing one key is hard, let's go the easy way and regenerate the whole file
+	// Alternatively we could do nothing, the key will be checked later again,
+	// so it doesn't matter if it hangs around for a little bit
+	s.Resync()
 }
 
 // Ask the server to resync it's database (e.g. authorized keys file)
 func (s *Server) Resync() error {
 	if s.AuthorizedKeyProxy.Enabled {
-		s.AuthorizedKeyProxy.m.Lock()
-		defer s.AuthorizedKeyProxy.m.Unlock()
-
-		tmpFile := filepath.Join(filepath.Dir(s.AuthorizedKeyProxy.AuthorizedKeysFile), "authorized_keys.gogs.tmp")
-		f, err := os.OpenFile(tmpFile, os.O_RDWR, 0600)
-		if err != nil {
-			return err
-		}
-
-		for _, key := range s.Callbacks.GetAllKeys() {
-			if pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(key)); err == nil {
-				f.WriteString(fmt.Sprintf("command=\"\" %s %s\n", md5.Sum(pubKey.Marshal()), ssh.MarshalAuthorizedKey(pubKey)))
-			}
-		}
-
-		if origF, err := os.Open(s.AuthorizedKeyProxy.AuthorizedKeysFile); err == nil {
-			r := bufio.NewReader(origF)
-			for line, err := r.ReadBytes('\n'); err == nil; {
-				if !bytes.Contains(line, []byte("gogs")) || !bytes.Contains(line, []byte("serve")) {
-					f.Write(line)
-				}
-			}
-			origF.Close()
-		}
-		f.Close()
-		return os.Rename(tmpFile, s.AuthorizedKeyProxy.AuthorizedKeysFile)
+		return s.AuthorizedKeyProxy.writeAuthorizedKeyFile(s.Callbacks.GetAllKeys(), true)
 	}
 	return nil
 }
 
 // Get all keytypes this server supports for clients
-func (s *Server) KeyTypes() map[string]string {
-	return nil
+func (s *Server) KeyTypes() map[string]int {
+	return s.keyTypes
 }
 
-func ValidateKey(content string) (string, error) {
-	pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(content))
-	if err != nil {
-		return "", err
+func (s *Server) parseTestKey(content []byte) (ok bool, key string, fingerprint string, keyType string, size int) {
+	loc := nonBase64.FindIndex(content)
+	if loc != nil {
+		content = content[:loc[0]]
 	}
-	return base64.StdEncoding.EncodeToString(pubKey.Marshal()), nil
+	raw := make([]byte, len(content)/4*3)
+	//log.Printf("%s", content)
+	n, _ := base64.StdEncoding.Decode(raw, content)
+	//log.Printf("%d %x", n, raw[:n])
+
+	if n > 0 {
+		raw = raw[:n]
+		key = base64.StdEncoding.EncodeToString(raw)
+		h := md5.Sum(raw)
+		fingerprint = hex.EncodeToString(h[:])
+	} else {
+		return
+	}
+
+	parts := make([][]byte, 0, 10)
+
+	for len(raw) > 0 {
+		if len(raw) < 4 {
+			return
+		}
+		l := int(binary.BigEndian.Uint32(raw))
+		raw = raw[4:]
+
+		if len(raw) < l {
+			return
+		}
+		parts = append(parts, raw[:l])
+		raw = raw[l:]
+	}
+
+	if len(parts) < 2 {
+		return
+	}
+
+	keyType = string(parts[0])
+
+	switch keyType {
+	case ssh.KeyAlgoRSA:
+		if len(parts) != 3 {
+			return
+		}
+		size = (len(parts[2]) - 1) * 8
+	case ssh.KeyAlgoDSA:
+		if len(parts) != 5 {
+			return
+		}
+		size = (len(parts[1]) - 1) * 8
+	case KeyAlgoED25519:
+		if len(parts) != 2 {
+			return
+		}
+		size = len(parts[1]) * 8
+	case ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521:
+		if len(parts) != 3 {
+			return
+		}
+		size = internalKeyTypes[keyType]
+	default:
+		return
+	}
+
+	ok = true
+	return
+}
+
+// Parse key from random content. On success return base64 key string. On failure
+// return error
+func (s *Server) ParseKey(content string) (string, string, error) {
+	c := []byte(" " + content)
+
+	for loc := 0; loc >= 0; loc = bytes.IndexAny(c, " \t\n\r\f") {
+		c = c[loc+1:]
+		ok, key, fingerprint, keyType, size := s.parseTestKey(c)
+		if ok {
+			minSize, has := s.keyTypes[keyType]
+			if !has {
+				return "", "", ErrKeyTypeNotSupported
+			}
+
+			if size < minSize {
+				return "", "", ErrKeyTooSmall
+			}
+			return key, fingerprint, nil
+		}
+	}
+
+	return "", "", ErrNoKey
 }
