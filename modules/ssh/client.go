@@ -4,7 +4,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"io"
 	"io/ioutil"
-	"os"
+	"log"
 )
 
 type GogsServeClient struct {
@@ -14,7 +14,8 @@ type GogsServeClient struct {
 	Command         string
 }
 
-func (c *GogsServeClient) run() error {
+func (c *GogsServeClient) Run(stdin io.Reader, stdout, stderr io.Writer) error {
+	log.Println("Run started now")
 	keyContents, err := ioutil.ReadFile(c.InternalKeyFile)
 	if err != nil {
 		return err
@@ -36,31 +37,40 @@ func (c *GogsServeClient) run() error {
 	}
 	defer client.Close()
 
+	log.Println("Client dialled")
+
 	session, err := client.NewSession()
 	if err != nil {
 		return err
 	}
-
-	err = session.Start(c.Fingerprint + " info " + c.Command)
-	if err != nil {
-		return err
-	}
+	log.Println("Session created now")
 
 	targetStderr, _ := session.StderrPipe()
 	targetStdout, _ := session.StdoutPipe()
 	targetStdin, _ := session.StdinPipe()
 
+	log.Println("Session started now")
+
 	go func() {
-		io.Copy(targetStdin, os.Stdin)
+		io.Copy(targetStdin, stdin)
+		targetStdin.Close()
+		log.Println("Client: I'm done copying stdin")
 	}()
 
 	go func() {
-		io.Copy(os.Stderr, targetStderr)
+		io.Copy(stderr, targetStderr)
+		log.Println("Client: I'm done copying stderr")
 	}()
 
 	go func() {
-		io.Copy(os.Stdout, targetStdout)
+		io.Copy(stdout, targetStdout)
+		log.Println("Client: I'm done copying stdout")
 	}()
 
-	return session.Wait()
+	return session.Run(c.Fingerprint + " info " + c.Command)
+	//if err != nil {
+	//	return err
+	//}
+
+	//return session.Wait()
 }

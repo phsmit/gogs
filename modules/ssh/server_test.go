@@ -1,6 +1,12 @@
 package ssh
 
 import (
+	"bytes"
+	"encoding/base64"
+	"io"
+	"io/ioutil"
+	"log"
+	"os"
 	"testing"
 )
 
@@ -26,14 +32,40 @@ var (
 		"command=\"dump /home\",no-pty,no-port-forwarding ssh-dss AAAAC3...51R== example.net",
 		"permitopen=\"192.0.2.1:80\",permitopen=\"192.0.2.2:25\" ssh-dss AAAAB5...21S==",
 		"tunnel=\"0\",command=\"sh /etc/netstart tun0\" ssh-rsa AAAA...== jane@example.net"}
+
+	testHostKey = []byte(`-----BEGIN RSA PRIVATE KEY-----
+MIIEpAIBAAKCAQEA027j9vcYYdl6ajQuQbIjpX9J48ogWFNM5uAsi6Vbtz5LZwmg
+pP887SCCECTZYO8SrJxMgZoRvr8tSHg+62qARueTh2bCnRMKhK+jvnZlRMv3IIQ9
+P19QCixdKv9aH36N1YA8nx5CDYJ4XlEfGu3LESSxdx9JnXlhRZSKdITuROujV73B
+/MQHgmz30am3ub+s3B6lVAEsL1hR3iyCglbUSY7G5JSzrZXk3n7RaezC/QoKcSLm
+L1FDl3eWb4u2WKFPxMuXWB56kKESqpPV3BZ9N/jYh9ju7nbQ1uxfcpT8Lnr3iFgG
+e0YC9A7nydB9CLv+Dd3funQiASjcCmRkI/LuAQIDAQABAoIBAQCTFlnQvSVhLQJU
+T+i+G0dhIqQsq7jEuW6OTvWuUGL1n4ilLbVsE4Q3Ep5ozLnNDYRYQIOYxa4CnMzL
+1Zsv+u8yZHflgj9xNoXiuK2ZGpRov9wz6ssRAyWTbjmCaBIyRsA0/vktWMdqzpEe
+TCDvgu36ByTOUh3MR1y8IxIO7Us09dPpdv1/N1it0x2JeHrapx7o5oCwz6lAcJCC
+iKP9W48HVw4MOVHo7P+5vyGZ8gVDzzXUAUNE0I0u9tyHAKSrH7krpMzVm5RhKpUV
+n7lSMmkX3rin+IBYu+GAt6ad5P0usSfmiNSfeaG1o647VKh9LXGYW86BfiT9Vyib
+pgrEKSfhAoGBAPyOFYTcHo66rq4xDv1BY8N2Zic0GMEEwND+Is1VB2H8qQdbqlnU
+a9CPxv6EvZT6ENhG8flfqKZJuIQs3hOW6R+p1OMAfMcHpz/QYkr30x249M2NccUJ
+4D5WkYxpssKyf9SOhi37k+9mBg/1jsiJPZgGGifYARhWp0PjLtGt1HWDAoGBANZR
+Nb489rujKDDCwT7gkA4kVNnPf7K5P3/emBFoyYPNjz8idMKt6ZIASzuknRqSyFvJ
+qaytDHX006AKXUDDwtrT9NCsZMdF9fhnh8AQ+5J3vWFpcGpYrtyMhYwTGvEB5be1
+T/a6dgLwPqK9MkaobXh1vmERreRF3J02n9yzujsrAoGACyAbNJIZyoHQxh2lImTq
+BydFEr8JxB74e3xmfhMb0yY1L/zKwVBJO5PJ2VZxn4lwioZ9jFW5cTHYLgJn+gbw
+2BM8LI/N71qX9Iiye8j1BN8r8Y4kj+CCf1yC5uOVG1yPowZwRMBLYQVmiPdxRcY9
+7199cXnjenX+wk/UtSnqLQ8CgYBlNIxQfbF2AiIkhJOFAb6FLxrykE4ZM+mMlKzy
+66zdlOCkS70fgcjerUzZqW6W8eGzlpONe1p7CVY2KS7IOql1dMoTEJW2lI8G8rzk
+MiDalbjUm1n+nkpU0/bsoskCLocwLWrJdFvuH000xGtNepPXYqK4bATV2zfG9dif
+/C9haQKBgQDTrCgH+kj6DGwrKhIF5mMJJy7c/gzOmqtVHxSH/0u21R+G66PyX61D
+Q3LPhJ6J2ssj5x0ieM1faRFMRMPOkp7z9UqoBFkzrDzIq0pPO/wkknuQB3VxCf3w
+IT/cTDo+BprdW6Lb3GEyJMZYnV9dUGIuowPD5+4T4Zec12TzsmMlkw==
+-----END RSA PRIVATE KEY-----`)
+	testPublicKey = []byte("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDTbuP29xhh2XpqNC5BsiOlf0njyiBYU0zm4CyLpVu3PktnCaCk/zztIIIQJNlg7xKsnEyBmhG+vy1IeD7raoBG55OHZsKdEwqEr6O+dmVEy/cghD0/X1AKLF0q/1offo3VgDyfHkINgnheUR8a7csRJLF3H0mdeWFFlIp0hO5E66NXvcH8xAeCbPfRqbe5v6zcHqVUASwvWFHeLIKCVtRJjsbklLOtleTeftFp7ML9CgpxIuYvUUOXd5Zvi7ZYoU/Ey5dYHnqQoRKqk9XcFn03+NiH2O7udtDW7F9ylPwueveIWAZ7RgL0DufJ0H0Iu/4N3d+6dCIBKNwKZGQj8u4B gogskey")
 )
 
 func TestParseKey(t *testing.T) {
-
-	s := Server{}
-
 	for k, data := range testKeys {
-		ok, key, fingerprint, keyType, size := s.parseTestKey([]byte(k))
+		ok, key, fingerprint, keyType, size := parseKey([]byte(k), true)
 		if !ok {
 			t.Errorf("Key (%s): not recognized", data.keyType)
 		}
@@ -53,10 +85,8 @@ func TestParseKey(t *testing.T) {
 }
 
 func TestParseKeyPrependRubbish(t *testing.T) {
-	s := Server{}
-
 	for k, data := range testKeys {
-		ok, _, _, _, _ := s.parseTestKey([]byte("AAAAAQAA" + k))
+		ok, _, _, _, _ := parseKey([]byte("AAAAAQAA"+k), true)
 		if ok {
 			t.Errorf("Key (%s): should not be ok with fake packet prepended", data.keyType)
 		}
@@ -64,10 +94,8 @@ func TestParseKeyPrependRubbish(t *testing.T) {
 }
 
 func TestParseKeyAppendRubbish(t *testing.T) {
-	s := Server{}
-
 	for k, data := range testKeys {
-		ok, key, _, _, _ := s.parseTestKey([]byte(k + "\n-----"))
+		ok, key, _, _, _ := parseKey([]byte(k+"\n-----"), false)
 		if !ok {
 			t.Errorf("Key (%s): should be ok with rubbish appended", data.keyType)
 		}
@@ -82,23 +110,143 @@ func TestParseKeySSH2(t *testing.T) {
 	k := `---- BEGIN SSH2 PUBLIC KEY ----
 Comment: "1024-bit RSA, converted from OpenSSH by me@example.com"
 x-command: /home/me/bin/lock-in-guest.sh
-AAAAB3NzaC1yc2EAAAABIwAAAIEA1on8gxCGJJWSRT4uOrR13mUaUk0hRf4RzxSZ1zRb
-YYFw8pfGesIFoEuVth4HKyF8k1y4mRUnYHP1XNMNMJl1JcEArC2asV8sHf6zSPVffozZ
-5TT4SfsUu/iKy9lUcCfXzwre4WWZSXXcPff+EHtWshahu3WzBdnGxm5Xoi89zcE=
+AAAAB3NzaC1yc2EAAAADAQABAAABAQDTbuP29xhh2XpqNC5BsiOlf0njyiBYU0zm4CyL
+pVu3PktnCaCk/zztIIIQJNlg7xKsnEyBmhG+vy1IeD7raoBG55OHZsKdEwqEr6O+dmVE
+y/cghD0/X1AKLF0q/1offo3VgDyfHkINgnheUR8a7csRJLF3H0mdeWFFlIp0hO5E66NX
+vcH8xAeCbPfRqbe5v6zcHqVUASwvWFHeLIKCVtRJjsbklLOtleTeftFp7ML9CgpxIuYv
+UUOXd5Zvi7ZYoU/Ey5dYHnqQoRKqk9XcFn03+NiH2O7udtDW7F9ylPwueveIWAZ7RgL0
+DufJ0H0Iu/4N3d+6dCIBKNwKZGQj8u4B
 ---- END SSH2 PUBLIC KEY ----`
+	baseKey := "AAAAB3NzaC1yc2EAAAADAQABAAABAQDTbuP29xhh2XpqNC5BsiOlf0njyiBYU0zm4CyLpVu3PktnCaCk/zztIIIQJNlg7xKsnEyBmhG+vy1IeD7raoBG55OHZsKdEwqEr6O+dmVEy/cghD0/X1AKLF0q/1offo3VgDyfHkINgnheUR8a7csRJLF3H0mdeWFFlIp0hO5E66NXvcH8xAeCbPfRqbe5v6zcHqVUASwvWFHeLIKCVtRJjsbklLOtleTeftFp7ML9CgpxIuYvUUOXd5Zvi7ZYoU/Ey5dYHnqQoRKqk9XcFn03+NiH2O7udtDW7F9ylPwueveIWAZ7RgL0DufJ0H0Iu/4N3d+6dCIBKNwKZGQj8u4B"
 
 	s := Server{}
+	s.keyTypes = internalKeyTypes
 
 	key, fingerprint, err := s.ParseKey(k)
 	if err != nil {
-		t.Error("SSH2 key not recognized")
+		t.Errorf("SSH2 key not recognized: %+v", err)
 		return
 	}
-	if key != "AAAAB3NzaC1yc2EAAAABIwAAAIEA1on8gxCGJJWSRT4uOrR13mUaUk0hRf4RzxSZ1zRbYYFw8pfGesIFoEuVth4HKyF8k1y4mRUnYHP1XNMNMJl1JcEArC2asV8sHf6zSPVffozZ5TT4SfsUu/iKy9lUcCfXzwre4WWZSXXcPff+EHtWshahu3WzBdnGxm5Xoi89zcE=" {
+	if key != baseKey {
 		t.Error("SSH2 key not correct")
 	}
-	if fingerprint != "" {
+	if fingerprint != "bec0957f854e8153e28b80840f2efec5" {
 		t.Error("SSH2 fingerprint not correct")
+	}
+}
+
+func TestParseKeyErrors(t *testing.T) {
+	unsupportedKey := "AAAAC3NzaC1lZDI1NTE5AAAAIOw6e0L1FN9qMPrF1K6NiAZQlezvGwFsfPFVjUH/sdx0"
+	tooSmalKey := "AAAAB3NzaC1yc2EAAAADAQABAAAAgQC4cB6EzRhmwGObIa1lXt/XpHwLjjBt3CxBe2GItJ1RRIDqDd15+DGKbgn4fQXl5ZfqSwignQlY7dFt4L6F5YlvyGy/NH/+KG5UZjZvMvjeI9C2W2WWjKbYimKmbCs/SvSDgyeTLg7bKXOaIR0gPl/3gdjhpFJ1s9wVSnoZoFeoIQ=="
+	s := Server{}
+	s.keyTypes = internalKeyTypes
+
+	_, _, err := s.ParseKey(unsupportedKey)
+	if err == nil || err != ErrKeyTypeNotSupported {
+		t.Errorf("Expected ErrKeyTypeNotSupported, got %+v", err)
+	}
+
+	_, _, err = s.ParseKey(tooSmalKey)
+	if err == nil || err != ErrKeyTooSmall {
+		t.Errorf("Expected ErrKeyTooSmall, got %+v", err)
+	}
+
+	_, _, err = s.ParseKey("")
+	if err == nil || err != ErrNoKey {
+		t.Errorf("Expected ErrNoKey, got %+v", err)
+	}
+}
+
+func TestParseKeyInvalidKeys(t *testing.T) {
+	enc := base64.StdEncoding.EncodeToString
+	invalids := []string{
+		enc([]byte{0, 0, 0, 3, 's', 's', 'h', 0, 0, 0, 1, 'b'}),
+		enc([]byte{0, 0, 0, 7, 's', 's', 'h', '-', 'r', 's', 'a', 0, 0, 0, 1, 'b'}),
+		enc([]byte{0, 0, 0, 7, 's', 's', 'h', '-', 'r', 's', 'a', 0, 0, 0, 1, 'b'}),
+		enc([]byte{0, 0, 0, 7, 's', 's', 'h', '-', 'd', 's', 's', 0, 0, 0, 1, 'b'}),
+		enc([]byte{0, 0, 0, 19, 'e', 'c', 'd', 's', 'a', '-', 's', 'h', 'a', '2', '-', 'n', 'i', 's', 't', 'p', '2', '5', '6', 0, 0, 0, 1, 'b'}),
+		enc([]byte{0, 0, 0, 11, 's', 's', 'h', '-', 'e', 'd', '2', '5', '5', '1', '9', 0, 0, 0, 1, 'b', 0, 0, 0, 1, 'b'}),
+		enc([]byte{0, 0, 0, 7, 's', 's', 'h', '-', 'r', 's', 'a'}),
+	}
+
+	for _, k := range invalids {
+		ok, _, _, _, _ := parseKey([]byte(k), true)
+		if ok {
+			t.Errorf("Key %s should not be accepted", k)
+		}
+	}
+}
+
+func aaaKeyForFingerprint(fingerprint [FingerprintSize]byte) (string, error) {
+	return "aaa", nil
+}
+
+func getAllTestKeys() [](string) {
+	keys := make([]string, 0, len(testKeys))
+	for k, _ := range testKeys {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+func doNothingWithConnection(key, cmd string, channel Channel, info ConnectionInfo) (uint32, error) {
+	log.Println("Handling command")
+	log.Printf("%s | %s", key, cmd)
+
+	channel.Stderr().Write([]byte(key))
+	channel.Stderr().Write([]byte(cmd))
+
+	io.Copy(channel, channel)
+	return 25, nil
+}
+
+func TestPlainServer(t *testing.T) {
+	s := Server{}
+
+	tmpDir, _ := ioutil.TempDir("", "")
+	defer os.RemoveAll(tmpDir)
+
+	ioutil.WriteFile(tmpDir+"/hostkey", testHostKey, 0600)
+	ioutil.WriteFile(tmpDir+"/hostkey.pub", testPublicKey, 0600)
+
+	s = Server{Callbacks: CallbackConfig{GetKeyByFingerprint: aaaKeyForFingerprint,
+		GetAllKeys:       getAllTestKeys,
+		HandleConnection: doNothingWithConnection},
+		KeyFile:    tmpDir + "/hostkey",
+		PubKeyFile: tmpDir + "/hostkey.pub",
+	}
+
+	err := s.Start()
+	defer s.socket.Close()
+	log.Printf("server listening on %+v", s.socket.Addr())
+
+	if err != nil {
+		t.Errorf("Unexpected error: %+v", err)
+	}
+
+	client := GogsServeClient{
+		InternalKeyFile: tmpDir + "/hostkey",
+		Fingerprint:     "abcdefghabcdefgh",
+		Host:            s.socket.Addr().String(),
+		Command:         "echo",
+	}
+
+	bufStdin := bytes.NewBufferString("Hilfksjafjdlajfljadklfjdkjaflkjadlfjalsdj")
+	bufStdout := &bytes.Buffer{}
+	bufStderr := &bytes.Buffer{}
+	if err = client.Run(bufStdin, bufStdout, bufStderr); err != nil {
+		log.Printf("Unexpected error: %+v", err)
+	}
+
+}
+
+func TestPlainServerErrors(t *testing.T) {
+	s := Server{}
+
+	err := s.Start()
+
+	if err != ErrCallbacksAreNil {
+		t.Errorf("with no options, expected ErrCallbacksAreNil, got %+v", err)
 	}
 
 }
