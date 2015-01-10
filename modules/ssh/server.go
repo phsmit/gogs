@@ -23,8 +23,7 @@ import (
 )
 
 const (
-	KeyAlgoED25519  = "ssh-ed25519"
-	FingerprintSize = md5.Size
+	KeyAlgoED25519 = "ssh-ed25519"
 )
 
 var (
@@ -98,7 +97,7 @@ type AuthorizedKeysConfig struct {
 type CallbackConfig struct {
 	// Return the content of a key with this fingerprint, or an error if this
 	// fingerprint has no access
-	GetKeyByFingerprint func(fingerprint [FingerprintSize]byte) (string, error)
+	GetKeyByFingerprint func(fingerprint string) (string, error)
 
 	// The GetKeys callback is used to obtain a list of all keys that we should
 	// accept connections from
@@ -111,6 +110,11 @@ type CallbackConfig struct {
 	// The function returns the exit code of the command
 	// If errors happen, they are optionally returned for logging
 	HandleConnection func(key, cmd string, channel Channel, info ConnectionInfo) (uint32, error)
+}
+
+func fingerprint(k ssh.PublicKey) string {
+	m := md5.Sum(k.Marshal())
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15])
 }
 
 func handleChanReq(s *Server, chanReq ssh.NewChannel, options map[string]string) {
@@ -142,30 +146,27 @@ func handleChanReq(s *Server, chanReq ssh.NewChannel, options map[string]string)
 
 // Payload: int: command size, string: command
 func handleExec(s *Server, ch ssh.Channel, req *ssh.Request, options map[string]string) {
-	log.Println("Exec being called")
+	log.Printf("Exec being called %s", req.Payload)
 	command := string(req.Payload[4:])
 
 	if p, has := options["proxy"]; has && p == "y" {
 		parts := strings.SplitN(command, " ", 3)
+		log.Println("%d parts", len(parts))
 		if len(parts) != 3 {
 			ch.Stderr().Write([]byte("Proxy error!\n"))
 			return
 		}
 
-		command = parts[3]
-		k, err := ssh.ParsePublicKey([]byte(parts[0]))
-		if err != nil {
-			ch.Stderr().Write([]byte("Proxy error!\n"))
-			return
-		}
-		fingerprint := md5.Sum(k.Marshal())
+		command = parts[2]
+		f := string(parts[0])
 
-		if key, err := s.Callbacks.GetKeyByFingerprint(fingerprint); err != nil {
-			options["key"] = key
+		log.Println("I'm goint to check %s", f)
+		if _, err := s.Callbacks.GetKeyByFingerprint(f); err == nil {
+			options["fingerprint"] = f
 		}
 	}
 
-	key, has := options["key"]
+	key, has := options["fingerprint"]
 	if !has {
 		ch.Stderr().Write([]byte("Permission denied\n"))
 		return
@@ -190,12 +191,16 @@ func testKeytypeSshKeygen(keyType string) (bool, error) {
 	}
 	tmpFile.Close()
 	tmpPath := tmpFile.Name()
+	os.Remove(tmpPath)
+
 	defer os.Remove(tmpPath)
 	defer os.Remove(tmpPath + ".pub")
 
-	cmd := exec.Command("ssh-keygen", "-t", keyType, "-f", tmpPath, "-q")
+	log.Println("ssh-keygen", "-t", keyType, "-f", tmpPath, "-q", "-N", "")
+	cmd := exec.Command("ssh-keygen", "-t", keyType, "-f", tmpPath, "-q", "-N", "")
 
 	if out, err := cmd.CombinedOutput(); err != nil {
+		log.Println(string(out))
 		if bytes.HasPrefix(out, []byte("unknown key")) {
 			return false, nil
 		} else {
@@ -237,7 +242,16 @@ func (s *Server) Start() error {
 		return err
 	}
 	pubKey, _, _, _, err := ssh.ParseAuthorizedKey(pubContent)
+	if err != nil {
+		return err
+	}
 
+	err = s.Resync()
+	if err != nil {
+		return err
+	}
+
+	log.Println("Before create config")
 	config := ssh.ServerConfig{
 		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 			if s.AuthorizedKeyProxy.Enabled {
@@ -245,19 +259,19 @@ func (s *Server) Start() error {
 					return &ssh.Permissions{Extensions: map[string]string{"proxy": "y"}}, nil
 				}
 			}
-			fingerprint := md5.Sum(key.Marshal())
-			log.Printf("Validating key with fingerprint %x", fingerprint)
-			if k, err := s.Callbacks.GetKeyByFingerprint(fingerprint); err != nil {
+			f := fingerprint(key)
+			log.Printf("Validating key with fingerprint %s", f)
+			if _, err := s.Callbacks.GetKeyByFingerprint(f); err != nil {
 				return &ssh.Permissions{Extensions: map[string]string{}}, err
-
 			} else {
-				return &ssh.Permissions{Extensions: map[string]string{"key": k}}, nil
+				return &ssh.Permissions{Extensions: map[string]string{"fingerprint": f}}, nil
 			}
 		},
 	}
 
 	config.AddHostKey(privKey)
 
+	log.Printf("Going to listen now")
 	s.socket, err = net.Listen("tcp", s.Host)
 	if err != nil {
 		return err
@@ -327,7 +341,7 @@ func (c *AuthorizedKeysConfig) writeAuthorizedKeyFile(newKeys []string, filterOl
 	defer c.m.Unlock()
 
 	tmpFile := filepath.Join(filepath.Dir(c.AuthorizedKeysFile), "authorized_keys.gogs.tmp")
-	f, err := os.OpenFile(tmpFile, os.O_RDWR, 0600)
+	f, err := os.OpenFile(tmpFile, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
 		return err
 	}

@@ -43,34 +43,27 @@ func (c *GogsServeClient) Run(stdin io.Reader, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	log.Println("Session created now")
 
 	targetStderr, _ := session.StderrPipe()
 	targetStdout, _ := session.StdoutPipe()
 	targetStdin, _ := session.StdinPipe()
 
-	log.Println("Session started now")
-
 	go func() {
 		io.Copy(targetStdin, stdin)
 		targetStdin.Close()
-		log.Println("Client: I'm done copying stdin")
 	}()
 
 	go func() {
 		io.Copy(stderr, targetStderr)
-		log.Println("Client: I'm done copying stderr")
 	}()
 
 	go func() {
 		io.Copy(stdout, targetStdout)
-		log.Println("Client: I'm done copying stdout")
 	}()
 
-	return session.Run(c.Fingerprint + " info " + c.Command)
-	//if err != nil {
-	//	return err
-	//}
-
-	//return session.Wait()
+	err = session.Run(c.Fingerprint + " info " + c.Command)
+	if err == io.EOF {
+		return nil
+	}
+	return err
 }

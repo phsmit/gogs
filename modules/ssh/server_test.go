@@ -3,6 +3,7 @@ package ssh
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"io"
 	"io/ioutil"
 	"log"
@@ -33,7 +34,7 @@ var (
 		"permitopen=\"192.0.2.1:80\",permitopen=\"192.0.2.2:25\" ssh-dss AAAAB5...21S==",
 		"tunnel=\"0\",command=\"sh /etc/netstart tun0\" ssh-rsa AAAA...== jane@example.net"}
 
-	testHostKey = []byte(`-----BEGIN RSA PRIVATE KEY-----
+	testHostKeys = [][]byte{[]byte(`-----BEGIN RSA PRIVATE KEY-----
 MIIEpAIBAAKCAQEA027j9vcYYdl6ajQuQbIjpX9J48ogWFNM5uAsi6Vbtz5LZwmg
 pP887SCCECTZYO8SrJxMgZoRvr8tSHg+62qARueTh2bCnRMKhK+jvnZlRMv3IIQ9
 P19QCixdKv9aH36N1YA8nx5CDYJ4XlEfGu3LESSxdx9JnXlhRZSKdITuROujV73B
@@ -59,8 +60,44 @@ MiDalbjUm1n+nkpU0/bsoskCLocwLWrJdFvuH000xGtNepPXYqK4bATV2zfG9dif
 /C9haQKBgQDTrCgH+kj6DGwrKhIF5mMJJy7c/gzOmqtVHxSH/0u21R+G66PyX61D
 Q3LPhJ6J2ssj5x0ieM1faRFMRMPOkp7z9UqoBFkzrDzIq0pPO/wkknuQB3VxCf3w
 IT/cTDo+BprdW6Lb3GEyJMZYnV9dUGIuowPD5+4T4Zec12TzsmMlkw==
------END RSA PRIVATE KEY-----`)
-	testPublicKey = []byte("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDTbuP29xhh2XpqNC5BsiOlf0njyiBYU0zm4CyLpVu3PktnCaCk/zztIIIQJNlg7xKsnEyBmhG+vy1IeD7raoBG55OHZsKdEwqEr6O+dmVEy/cghD0/X1AKLF0q/1offo3VgDyfHkINgnheUR8a7csRJLF3H0mdeWFFlIp0hO5E66NXvcH8xAeCbPfRqbe5v6zcHqVUASwvWFHeLIKCVtRJjsbklLOtleTeftFp7ML9CgpxIuYvUUOXd5Zvi7ZYoU/Ey5dYHnqQoRKqk9XcFn03+NiH2O7udtDW7F9ylPwueveIWAZ7RgL0DufJ0H0Iu/4N3d+6dCIBKNwKZGQj8u4B gogskey")
+-----END RSA PRIVATE KEY-----`),
+		[]byte(`-----BEGIN RSA PRIVATE KEY-----
+MIIEowIBAAKCAQEAu+x0DC3X3I0fL7c1nEmiQuOXjcpIua8UwLM+gYurnT3xLdy1
+EhGhPayoO22P/Pvv93y3vFjCLK1idAKaTiyrxwnOQI9AHxvmu6oqjgPMxlc4h+ZE
+1sqbEecLxpuxqdPZsxUNC70EJsEZRpcjevIuHCiXJ0V2ac1nOtqiTSa+6KqQ/6cP
+dwi5ITQwl28j8VpAUSZGa8z24ZbFDt03SwddUVs9oL+qyUFK55EOJfx87DZDCXRa
+4GOYccyYFP9LQbsaqYrkuhrCu+pEz2eBczhtv2ZEVe/hG2tZCjSWkTdTG6+knSJX
+djnhmY2meDS1kqEpeSLP7kUZ3Vj2v5cxe/cOtwIDAQABAoIBACZOYa1l3t2PSq8g
+SmZMQC4gVHFLrZ1kCffp0bD4dof762Cs36AKRfLbcgODJtmrxVOOcamL8jDHOw1o
+xmlvA6jz374bNTfiKRtR6ZC/R4ualeRl1NxvukJg9W6LqCB1FahCf0FIS0NXEz7n
+ag0StsF4qK8RoryYaRV/IZxWbI3idS8hsfQuxx1q8YzRL3IVebZ5KsmzS8njLQRW
+ubIHz0gt0FYPuQU4l0yGs9wMQuEZsFkTWjCTamg+2wk22NaQYuaJf/gOHj+kRoOo
+g1Mcl6yeyJD2ExvWIyeAXP14b6JGQKBl7+5zbQGgbwfhaeQwNbVGqKCT1W3atkiu
+Bh6YIckCgYEA7VzVmxs7QZXf8V9et0c4pr/CmbQrP6Ex/ft1hL07Ig1I5WjdDW/s
+6ZHpQdtjgTbp9uYwrWQngY1uWYuM8hncg+5NdYdFeAhYKtYsJGUGILHphn/7OScd
+p89qN/bZibYDbCw9w/0ir/EUY57ssrSh3uJpr9fmNg9bmzvacueO+h0CgYEAyq3b
+wzx+xwxaawfMH0J12EVGmWdHd6VJwm2v+uY50cEIT/sFpKuasujit5ma0wSab5z5
+m29dW15MSHZJKm2ecOK/I8f1dfnyX7qCsF1cYyTH5UwpH5J4mUN2I2RlFfp+4eg1
+9Jp3ROCwl3KngV7ZGeyf1PalmgNzubGbnYLxs+MCgYEAtaJCesydzZRIp8XZDtrb
+SQ6YdVHffnN1c+tGhGrhoy8TRym1biDl494Z5qFhRXGmG58ORMDNUl/Nv4wAMQsF
+KZfjgjofOLj57t2xLbB4vfAmyRuKPLPoB4+6slSdJro3aEF6ik1ci9IpTgpBCocb
+Dxmm0j6eFWQvL1zfzunPCSkCgYBSeSSv8XH1NUWlv+qD3dtuQeJUkf425X96KoAt
+rHlirRXg1diaBWpR2wpGg67Ip1rgiBPZ+BsZDuojol5rcWfDr8DvonJzq13BLnf3
+pEXv4guldrRVMJj6ZMUx6axooSH4czFhc2mNEZFKT1FyB1J4hh0T37nLThRNP8R+
+98W62QKBgHch+JiRrzi0amIEXmkTupjKo3kCEayLFOSRbtgTngBztiSMrj2/vbnr
+cHB/hqoDJk70J5iBNjofcKuNe3qDRqWyR243hI/YuE5OASfrY6po9ZMCnLPDTNp/
+iHwS2i1JFxnX9m+APOdCqPg0cAxi51rYjmPzXApJqy9MTFZT819W
+-----END RSA PRIVATE KEY-----
+`),
+	}
+	testPublicKeys = [][]byte{
+		[]byte("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDTbuP29xhh2XpqNC5BsiOlf0njyiBYU0zm4CyLpVu3PktnCaCk/zztIIIQJNlg7xKsnEyBmhG+vy1IeD7raoBG55OHZsKdEwqEr6O+dmVEy/cghD0/X1AKLF0q/1offo3VgDyfHkINgnheUR8a7csRJLF3H0mdeWFFlIp0hO5E66NXvcH8xAeCbPfRqbe5v6zcHqVUASwvWFHeLIKCVtRJjsbklLOtleTeftFp7ML9CgpxIuYvUUOXd5Zvi7ZYoU/Ey5dYHnqQoRKqk9XcFn03+NiH2O7udtDW7F9ylPwueveIWAZ7RgL0DufJ0H0Iu/4N3d+6dCIBKNwKZGQj8u4B gogskey"),
+		[]byte("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC77HQMLdfcjR8vtzWcSaJC45eNyki5rxTAsz6Bi6udPfEt3LUSEaE9rKg7bY/8++/3fLe8WMIsrWJ0AppOLKvHCc5Aj0AfG+a7qiqOA8zGVziH5kTWypsR5wvGm7Gp09mzFQ0LvQQmwRlGlyN68i4cKJcnRXZpzWc62qJNJr7oqpD/pw93CLkhNDCXbyPxWkBRJkZrzPbhlsUO3TdLB11RWz2gv6rJQUrnkQ4l/HzsNkMJdFrgY5hxzJgU/0tBuxqpiuS6GsK76kTPZ4FzOG2/ZkRV7+Eba1kKNJaRN1Mbr6SdIld2OeGZjaZ4NLWSoSl5Is/uRRndWPa/lzF79w63 userkey")}
+
+	testFingerprints = []string{
+		"be:c0:95:7f:85:4e:81:53:e2:8b:80:84:0f:2e:fe:c5",
+		"06:0f:6e:04:de:c7:f6:c1:5e:3b:19:f0:b6:7e:3f:69",
+	}
 )
 
 func TestParseKey(t *testing.T) {
@@ -177,8 +214,16 @@ func TestParseKeyInvalidKeys(t *testing.T) {
 	}
 }
 
-func aaaKeyForFingerprint(fingerprint [FingerprintSize]byte) (string, error) {
-	return "aaa", nil
+func aaaKeyForFingerprint(fingerprint string) (string, error) {
+	if fingerprint == testFingerprints[1] {
+		return string(testPublicKeys[1]), nil
+	}
+
+	if fingerprint == testFingerprints[0] {
+		return string(testPublicKeys[0]), nil
+	}
+
+	return "", errors.New("Not found")
 }
 
 func getAllTestKeys() [](string) {
@@ -190,11 +235,7 @@ func getAllTestKeys() [](string) {
 }
 
 func doNothingWithConnection(key, cmd string, channel Channel, info ConnectionInfo) (uint32, error) {
-	log.Println("Handling command")
-	log.Printf("%s | %s", key, cmd)
-
 	channel.Stderr().Write([]byte(key))
-	channel.Stderr().Write([]byte(cmd))
 
 	io.Copy(channel, channel)
 	return 25, nil
@@ -206,8 +247,8 @@ func TestPlainServer(t *testing.T) {
 	tmpDir, _ := ioutil.TempDir("", "")
 	defer os.RemoveAll(tmpDir)
 
-	ioutil.WriteFile(tmpDir+"/hostkey", testHostKey, 0600)
-	ioutil.WriteFile(tmpDir+"/hostkey.pub", testPublicKey, 0600)
+	ioutil.WriteFile(tmpDir+"/hostkey", testHostKeys[0], 0600)
+	ioutil.WriteFile(tmpDir+"/hostkey.pub", testPublicKeys[0], 0600)
 
 	s = Server{Callbacks: CallbackConfig{GetKeyByFingerprint: aaaKeyForFingerprint,
 		GetAllKeys:       getAllTestKeys,
@@ -218,7 +259,6 @@ func TestPlainServer(t *testing.T) {
 
 	err := s.Start()
 	defer s.socket.Close()
-	log.Printf("server listening on %+v", s.socket.Addr())
 
 	if err != nil {
 		t.Errorf("Unexpected error: %+v", err)
@@ -226,16 +266,70 @@ func TestPlainServer(t *testing.T) {
 
 	client := GogsServeClient{
 		InternalKeyFile: tmpDir + "/hostkey",
-		Fingerprint:     "abcdefghabcdefgh",
+		Fingerprint:     testFingerprints[1],
 		Host:            s.socket.Addr().String(),
 		Command:         "echo",
 	}
 
-	bufStdin := bytes.NewBufferString("Hilfksjafjdlajfljadklfjdkjaflkjadlfjalsdj")
+	bufStdin := bytes.NewBufferString("Hi")
 	bufStdout := &bytes.Buffer{}
 	bufStderr := &bytes.Buffer{}
 	if err = client.Run(bufStdin, bufStdout, bufStderr); err != nil {
-		log.Printf("Unexpected error: %+v", err)
+		t.Errorf("Unexpected error: %+v", err)
+	}
+	if bufStdout.String() != "Hi" {
+		t.Errorf("Incorrect data on stdout %+v", bufStdout.String())
+	}
+	if bufStderr.String() != testFingerprints[0] {
+		t.Errorf("Incorrect data on stderr %+v", bufStderr.String())
+	}
+
+}
+
+func TestAuthKeyServer(t *testing.T) {
+	s := Server{}
+
+	tmpDir, _ := ioutil.TempDir("", "")
+	log.Println(tmpDir)
+	defer os.RemoveAll(tmpDir)
+
+	ioutil.WriteFile(tmpDir+"/hostkey", testHostKeys[0], 0600)
+	ioutil.WriteFile(tmpDir+"/hostkey.pub", testPublicKeys[0], 0600)
+
+	s = Server{Callbacks: CallbackConfig{GetKeyByFingerprint: aaaKeyForFingerprint,
+		GetAllKeys:       getAllTestKeys,
+		HandleConnection: doNothingWithConnection},
+		KeyFile:    tmpDir + "/hostkey",
+		PubKeyFile: tmpDir + "/hostkey.pub",
+		AuthorizedKeyProxy: AuthorizedKeysConfig{
+			Enabled:            true,
+			AuthorizedKeysFile: tmpDir + "/authorized_keys",
+		},
+	}
+
+	if err := s.Start(); err != nil {
+		t.Errorf("Unexpected error: %+v", err)
+	}
+	defer s.socket.Close()
+
+	client := GogsServeClient{
+		InternalKeyFile: tmpDir + "/hostkey",
+		Fingerprint:     testFingerprints[1],
+		Host:            s.socket.Addr().String(),
+		Command:         "echo",
+	}
+
+	bufStdin := bytes.NewBufferString("Hi")
+	bufStdout := &bytes.Buffer{}
+	bufStderr := &bytes.Buffer{}
+	if err := client.Run(bufStdin, bufStdout, bufStderr); err != nil {
+		t.Errorf("Unexpected error: %+v", err)
+	}
+	if bufStdout.String() != "Hi" {
+		t.Errorf("Incorrect data on stdout %+v", bufStdout.String())
+	}
+	if bufStderr.String() != testFingerprints[1] {
+		t.Errorf("Incorrect data on stderr %+v", bufStderr.String())
 	}
 
 }
