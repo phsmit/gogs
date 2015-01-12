@@ -4,9 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/md5"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"golang.org/x/crypto/ssh"
@@ -212,6 +216,34 @@ func testKeytypeSshKeygen(keyType string) (bool, error) {
 }
 
 func generateHostKey(keyFile, pubKeyFile string) error {
+	key, err := rsa.GenerateMultiPrimeKey(rand.Reader, 4, 4096)
+	if err != nil {
+		return err
+	}
+
+	fKey, err := os.OpenFile(keyFile, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		return err
+	}
+	defer fKey.Close()
+
+	if err := pem.Encode(fKey, &pem.Block{Type: "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	}); err != nil {
+		return err
+	}
+
+	fPub, err := os.OpenFile(pubKeyFile, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		return err
+	}
+	defer fPub.Close()
+
+	pub, err := ssh.NewPublicKey(key.PublicKey)
+	if err != nil {
+		return err
+	}
+	fPub.Write(pub.Marshal())
 	return nil
 }
 
