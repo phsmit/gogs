@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
+	"golang.org/x/crypto/ssh"
 	"io"
 	"io/ioutil"
-	"log"
 	"os"
 	"testing"
 )
@@ -26,13 +26,12 @@ var (
 		"AAAAC3NzaC1lZDI1NTE5AAAAIOw6e0L1FN9qMPrF1K6NiAZQlezvGwFsfPFVjUH/sdx0": keyData{"ssh-ed25519", 256, "49a5ef89c1ca23515fedaad4188125ea"},
 		"AAAAB3NzaC1yc2EAAAADAQABAAABAQDTbuP29xhh2XpqNC5BsiOlf0njyiBYU0zm4CyLpVu3PktnCaCk/zztIIIQJNlg7xKsnEyBmhG+vy1IeD7raoBG55OHZsKdEwqEr6O+dmVEy/cghD0/X1AKLF0q/1offo3VgDyfHkINgnheUR8a7csRJLF3H0mdeWFFlIp0hO5E66NXvcH8xAeCbPfRqbe5v6zcHqVUASwvWFHeLIKCVtRJjsbklLOtleTeftFp7ML9CgpxIuYvUUOXd5Zvi7ZYoU/Ey5dYHnqQoRKqk9XcFn03+NiH2O7udtDW7F9ylPwueveIWAZ7RgL0DufJ0H0Iu/4N3d+6dCIBKNwKZGQj8u4B": keyData{"ssh-rsa", 2048, "bec0957f854e8153e28b80840f2efec5"},
 	}
-	originalLines = []string{
-		"# Comments allowed at start of line",
-		"ssh-rsa AAAAB3Nza...LiPk== gogs@example.net",
-		"from=\"*.sales.gogs.net,!pc.sales.example.net\" ssh-rsa AAAAB2...19Q== john@example.net",
-		"command=\"dump /home\",no-pty,no-port-forwarding ssh-dss AAAAC3...51R== example.net",
-		"permitopen=\"192.0.2.1:80\",permitopen=\"192.0.2.2:25\" ssh-dss AAAAB5...21S==",
-		"tunnel=\"0\",command=\"sh /etc/netstart tun0\" ssh-rsa AAAA...== jane@example.net"}
+	originalLines = `# Comments allowed at start of line
+ssh-rsa AAAAB3Nza...LiPk== gogs@example.net
+from="*.sales.gogs.net,!pc.sales.example.net" ssh-rsa AAAAB2...19Q== john@example.net
+command="dump /home",no-pty,no-port-forwarding ssh-dss AAAAC3...51R== example.net
+permitopen="192.0.2.1:80",permitopen="192.0.2.2:25" ssh-dss AAAAB5...21S==
+tunnel="0",command="sh /etc/netstart tun0" ssh-rsa AAAA...== jane@example.net`
 
 	testHostKeys = [][]byte{[]byte(`-----BEGIN RSA PRIVATE KEY-----
 MIIEpAIBAAKCAQEA027j9vcYYdl6ajQuQbIjpX9J48ogWFNM5uAsi6Vbtz5LZwmg
@@ -214,7 +213,7 @@ func TestParseKeyInvalidKeys(t *testing.T) {
 	}
 }
 
-func aaaKeyForFingerprint(fingerprint string) (string, error) {
+func checkFingerprint(fingerprint string) (string, error) {
 	if fingerprint == testFingerprints[1] {
 		return string(testPublicKeys[1]), nil
 	}
@@ -250,7 +249,7 @@ func TestPlainServer(t *testing.T) {
 	ioutil.WriteFile(tmpDir+"/hostkey", testHostKeys[0], 0600)
 	ioutil.WriteFile(tmpDir+"/hostkey.pub", testPublicKeys[0], 0600)
 
-	s = Server{Callbacks: CallbackConfig{GetKeyByFingerprint: aaaKeyForFingerprint,
+	s = Server{Callbacks: CallbackConfig{GetKeyByFingerprint: checkFingerprint,
 		GetAllKeys:       getAllTestKeys,
 		HandleConnection: doNothingWithConnection},
 		KeyFile:    tmpDir + "/hostkey",
@@ -258,7 +257,7 @@ func TestPlainServer(t *testing.T) {
 	}
 
 	err := s.Start()
-	defer s.socket.Close()
+	defer s.Stop()
 
 	if err != nil {
 		t.Errorf("Unexpected error: %+v", err)
@@ -290,13 +289,12 @@ func TestAuthKeyServer(t *testing.T) {
 	s := Server{}
 
 	tmpDir, _ := ioutil.TempDir("", "")
-	log.Println(tmpDir)
 	defer os.RemoveAll(tmpDir)
 
 	ioutil.WriteFile(tmpDir+"/hostkey", testHostKeys[0], 0600)
 	ioutil.WriteFile(tmpDir+"/hostkey.pub", testPublicKeys[0], 0600)
 
-	s = Server{Callbacks: CallbackConfig{GetKeyByFingerprint: aaaKeyForFingerprint,
+	s = Server{Callbacks: CallbackConfig{GetKeyByFingerprint: checkFingerprint,
 		GetAllKeys:       getAllTestKeys,
 		HandleConnection: doNothingWithConnection},
 		KeyFile:    tmpDir + "/hostkey",
@@ -310,7 +308,7 @@ func TestAuthKeyServer(t *testing.T) {
 	if err := s.Start(); err != nil {
 		t.Errorf("Unexpected error: %+v", err)
 	}
-	defer s.socket.Close()
+	defer s.Stop()
 
 	client := GogsServeClient{
 		InternalKeyFile: tmpDir + "/hostkey",
@@ -334,6 +332,86 @@ func TestAuthKeyServer(t *testing.T) {
 
 }
 
+func TestAuthorizedKeysWriting(t *testing.T) {
+	tmpDir, _ := ioutil.TempDir("", "")
+	defer os.RemoveAll(tmpDir)
+
+	ioutil.WriteFile(tmpDir+"/authkeys", []byte(originalLines), 0600)
+
+	s := Server{Callbacks: CallbackConfig{GetAllKeys: getAllTestKeys},
+		AuthorizedKeyProxy: AuthorizedKeysConfig{
+			Enabled:            true,
+			AuthorizedKeysFile: tmpDir + "/authkeys",
+		},
+	}
+
+	for k, _ := range testKeys {
+		s.AddKey(k)
+	}
+
+	newContents, err := ioutil.ReadFile(tmpDir + "/authkeys")
+	if err != nil {
+		t.Errorf("Unexpected reading error %+v", err)
+	}
+
+	if !bytes.HasSuffix(newContents, []byte(originalLines)) {
+		t.Errorf("Original lines are not preserved in Authorized keys")
+	}
+
+	for k, _ := range testKeys {
+		if !bytes.Contains(newContents, []byte(k)) {
+			t.Errorf("%s line was not added to Authorized keys", k)
+		}
+	}
+
+	testOption := func(s []string, o string) bool {
+		for _, a := range s {
+			if a == o {
+				return true
+			}
+		}
+		return false
+	}
+	_, _, options, _, err := ssh.ParseAuthorizedKey(newContents)
+	if err != nil {
+		t.Errorf("Authkeys file can't be parsed")
+	}
+
+	for _, opt := range []string{"no-port-forwarding", "no-X11-forwarding", "no-agent-forwarding", "no-pty"} {
+		if !testOption(options, opt) {
+			t.Errorf("Flag %s is not written in authkeys file!", opt)
+		}
+	}
+
+	if err := s.Resync(); err != nil {
+		t.Errorf("Unexpected error when resyncing %+v", err)
+	}
+
+	for k, _ := range testKeys {
+		if !bytes.Contains(newContents, []byte(k)) {
+			t.Errorf("%s line was not added to Authorized keys", k)
+		}
+	}
+
+	if !bytes.HasSuffix(newContents, []byte(originalLines)) {
+		t.Errorf("Original lines are not preserved in Authorized keys")
+	}
+
+	if err := s.AuthorizedKeyProxy.writeAuthorizedKeyFile([]string{}, true); err != nil {
+		t.Errorf("Unexpected error when clearing authkeys %+v", err)
+	}
+
+	for k, _ := range testKeys {
+		if !bytes.Contains(newContents, []byte(k)) {
+			t.Errorf("%s line was not removed from Authorized keys", k)
+		}
+	}
+
+	if !bytes.HasSuffix(newContents, []byte(originalLines)) {
+		t.Errorf("Original lines are not preserved in Authorized keys")
+	}
+}
+
 func TestPlainServerErrors(t *testing.T) {
 	s := Server{}
 
@@ -341,6 +419,100 @@ func TestPlainServerErrors(t *testing.T) {
 
 	if err != ErrCallbacksAreNil {
 		t.Errorf("with no options, expected ErrCallbacksAreNil, got %+v", err)
+	}
+
+	tmpDir, _ := ioutil.TempDir("", "")
+	defer os.RemoveAll(tmpDir)
+
+	ioutil.WriteFile(tmpDir+"/hostkey", testHostKeys[0], 0600)
+	ioutil.WriteFile(tmpDir+"/hostkey.pub", testPublicKeys[0], 0600)
+
+	s = Server{Callbacks: CallbackConfig{GetKeyByFingerprint: checkFingerprint,
+		GetAllKeys:       getAllTestKeys,
+		HandleConnection: doNothingWithConnection},
+		KeyFile:    tmpDir + "/hostkey",
+		PubKeyFile: tmpDir + "/hostkey.pub",
+	}
+
+	s2 := s
+	if err := s.Start(); err != nil {
+		t.Errorf("First server on port should start fine, got error %+v", err)
+	}
+
+	s2.Host = s.socket.Addr().String()
+	if err := s2.Start(); err == nil {
+		t.Errorf("Second server on port should fail")
+	}
+
+	s.Stop()
+
+	if err := s2.Start(); err != nil {
+		t.Errorf("Second server should start fine now, got error %+v", err)
+	}
+
+	s2.Stop()
+}
+
+func TestGenerateKey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test in short mode.")
+	}
+	tmpDir, _ := ioutil.TempDir("", "")
+	defer os.RemoveAll(tmpDir)
+
+	err := generateHostKey(tmpDir+"/hostkey", tmpDir+"/hostkey.pub")
+	if err != nil {
+		t.Errorf("Unexpected error generating keys: %+v", err)
+	}
+}
+
+func TestKeygen(t *testing.T) {
+	ok, err := testKeytypeSshKeygen("ssh-rsa")
+	if !ok {
+		t.Errorf("ssh-rsa should be a valid keytype, but testKeytypeSshKeygen returns false")
+	}
+	if err != nil {
+		t.Errorf("ssh-rsa should be a valid keytype, but testKeytypeSshKeygen returns error %+v", err)
+	}
+
+	ok, err = testKeytypeSshKeygen("ssh-fail")
+	if ok {
+		t.Errorf("ssh-fail should not be recognized by ssh-keygen as valid keytype, but testKeytypeSshKeygen returns true")
+	}
+
+}
+
+func TestServerPermDenied(t *testing.T) {
+	tmpDir, _ := ioutil.TempDir("", "")
+	defer os.RemoveAll(tmpDir)
+
+	ioutil.WriteFile(tmpDir+"/hostkey", testHostKeys[0], 0600)
+	ioutil.WriteFile(tmpDir+"/hostkey.pub", testPublicKeys[0], 0600)
+
+	s := Server{Callbacks: CallbackConfig{GetKeyByFingerprint: func(fingerprint string) (string, error) {
+		return "", ErrPermissionDenied
+	},
+		GetAllKeys:       func() [](string) { return nil },
+		HandleConnection: doNothingWithConnection},
+		KeyFile:    tmpDir + "/hostkey",
+		PubKeyFile: tmpDir + "/hostkey.pub"}
+
+	if err := s.Start(); err != nil {
+		t.Errorf("Server should start fine, got error %+v", err)
+	}
+
+	client := GogsServeClient{
+		InternalKeyFile: tmpDir + "/hostkey",
+		Fingerprint:     testFingerprints[1],
+		Host:            s.socket.Addr().String(),
+		Command:         "echo",
+	}
+
+	bufStdin := bytes.NewBufferString("Hi")
+	bufStdout := &bytes.Buffer{}
+	bufStderr := &bytes.Buffer{}
+	if err := client.Run(bufStdin, bufStdout, bufStderr); err == nil {
+		t.Errorf("Connections should have failed with permission denied, but it didn't")
 	}
 
 }

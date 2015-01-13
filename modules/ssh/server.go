@@ -16,7 +16,6 @@ import (
 	"golang.org/x/crypto/ssh"
 	"io"
 	"io/ioutil"
-	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -24,10 +23,18 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	glog "github.com/gogits/gogs/modules/log"
 )
+
+var log glog.LoggerInterface
 
 const (
 	KeyAlgoED25519 = "ssh-ed25519"
+)
+
+const (
+	_TPL_AUTHKEY = "command=\"%s serv %s\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty %s %s %s"
 )
 
 var (
@@ -35,10 +42,8 @@ var (
 	ErrKeyTypeNotSupported     = errors.New("This keytype is not supported")
 	ErrKeyTooSmall             = errors.New("The size of this key is too small")
 	ErrFailedHostkeyGeneration = errors.New("Failed to generate host key")
-)
-
-var (
-	ErrCallbacksAreNil = errors.New("All callbacks need to be not-nil")
+	ErrCallbacksAreNil         = errors.New("All callbacks need to be not-nil")
+	ErrPermissionDenied        = errors.New("Permission denied")
 )
 
 var (
@@ -122,7 +127,7 @@ func fingerprint(k ssh.PublicKey) string {
 }
 
 func handleChanReq(s *Server, chanReq ssh.NewChannel, options map[string]string) {
-	log.Println("Handle chan req being called")
+	//log.Println("Handle chan req being called")
 	if chanReq.ChannelType() != "session" {
 		chanReq.Reject(ssh.Prohibited, "channel type is not a session")
 		return
@@ -136,7 +141,7 @@ func handleChanReq(s *Server, chanReq ssh.NewChannel, options map[string]string)
 	defer ch.Close()
 	for req := range reqs {
 		if req.Type != "exec" {
-			req.Reply(false, []byte{})
+			req.Reply(false, nil)
 			continue
 		} else {
 			handleExec(s, ch, req, options)
@@ -144,18 +149,18 @@ func handleChanReq(s *Server, chanReq ssh.NewChannel, options map[string]string)
 		}
 	}
 
-	log.Printf("Channel done and handled")
+	//log.Printf("Channel done and handled")
 
 }
 
 // Payload: int: command size, string: command
 func handleExec(s *Server, ch ssh.Channel, req *ssh.Request, options map[string]string) {
-	log.Printf("Exec being called %s", req.Payload)
+	//log.Printf("Exec being called %s", req.Payload)
 	command := string(req.Payload[4:])
 
 	if p, has := options["proxy"]; has && p == "y" {
 		parts := strings.SplitN(command, " ", 3)
-		log.Println("%d parts", len(parts))
+		//log.Println("%d parts", len(parts))
 		if len(parts) != 3 {
 			ch.Stderr().Write([]byte("Proxy error!\n"))
 			return
@@ -164,7 +169,7 @@ func handleExec(s *Server, ch ssh.Channel, req *ssh.Request, options map[string]
 		command = parts[2]
 		f := string(parts[0])
 
-		log.Println("I'm goint to check %s", f)
+		//log.Println("I'm goint to check %s", f)
 		if _, err := s.Callbacks.GetKeyByFingerprint(f); err == nil {
 			options["fingerprint"] = f
 		}
@@ -185,7 +190,7 @@ func handleExec(s *Server, ch ssh.Channel, req *ssh.Request, options map[string]
 		ch.Write([]byte(err.Error()))
 		return
 	}
-	log.Printf("Returning from handleExec")
+	//log.Printf("Returning from handleExec")
 }
 
 func testKeytypeSshKeygen(keyType string) (bool, error) {
@@ -200,11 +205,11 @@ func testKeytypeSshKeygen(keyType string) (bool, error) {
 	defer os.Remove(tmpPath)
 	defer os.Remove(tmpPath + ".pub")
 
-	log.Println("ssh-keygen", "-t", keyType, "-f", tmpPath, "-q", "-N", "")
+	//log.Println("ssh-keygen", "-t", keyType, "-f", tmpPath, "-q", "-N", "")
 	cmd := exec.Command("ssh-keygen", "-t", keyType, "-f", tmpPath, "-q", "-N", "")
 
 	if out, err := cmd.CombinedOutput(); err != nil {
-		log.Println(string(out))
+		//log.Println(string(out))
 		if bytes.HasPrefix(out, []byte("unknown key")) {
 			return false, nil
 		} else {
@@ -239,7 +244,7 @@ func generateHostKey(keyFile, pubKeyFile string) error {
 	}
 	defer fPub.Close()
 
-	pub, err := ssh.NewPublicKey(key.PublicKey)
+	pub, err := ssh.NewPublicKey(&key.PublicKey)
 	if err != nil {
 		return err
 	}
@@ -283,7 +288,7 @@ func (s *Server) Start() error {
 		return err
 	}
 
-	log.Println("Before create config")
+	//log.Println("Before create config")
 	config := ssh.ServerConfig{
 		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 			if s.AuthorizedKeyProxy.Enabled {
@@ -292,7 +297,7 @@ func (s *Server) Start() error {
 				}
 			}
 			f := fingerprint(key)
-			log.Printf("Validating key with fingerprint %s", f)
+			//log.Printf("Validating key with fingerprint %s", f)
 			if _, err := s.Callbacks.GetKeyByFingerprint(f); err != nil {
 				return &ssh.Permissions{Extensions: map[string]string{}}, err
 			} else {
@@ -303,12 +308,12 @@ func (s *Server) Start() error {
 
 	config.AddHostKey(privKey)
 
-	log.Printf("Going to listen now")
+	//log.Printf("Going to listen now")
 	s.socket, err = net.Listen("tcp", s.Host)
 	if err != nil {
 		return err
 	}
-	log.Printf("server listening on %+v", s.socket.Addr())
+	//log.Printf("server listening on %+v", s.socket.Addr())
 
 	go func() {
 		for {
@@ -316,7 +321,7 @@ func (s *Server) Start() error {
 			if err != nil {
 				continue
 			}
-			log.Println("Incoming connection")
+			//log.Println("Incoming connection")
 
 			sshConn, newChans, requests, err := ssh.NewServerConn(conn, &config)
 			if err != nil {
@@ -324,14 +329,14 @@ func (s *Server) Start() error {
 			}
 			defer sshConn.Close()
 
-			log.Println("Upgraded to ssh")
+			//log.Println("Upgraded to ssh")
 
 			go ssh.DiscardRequests(requests)
 
-			log.Println("Connection from", sshConn.RemoteAddr())
+			//log.Println("Connection from", sshConn.RemoteAddr())
 			go func() {
 				for chanReq := range newChans {
-					log.Printf("chan with permissions: %+v", sshConn.Permissions)
+					//log.Printf("chan with permissions: %+v", sshConn.Permissions)
 					go handleChanReq(s, chanReq, sshConn.Permissions.Extensions)
 				}
 			}()
@@ -380,7 +385,7 @@ func (c *AuthorizedKeysConfig) writeAuthorizedKeyFile(newKeys []string, filterOl
 
 	for _, key := range newKeys {
 		if ok, k, fingerprint, keyType, _ := parseKey([]byte(key), true); ok {
-			f.WriteString(fmt.Sprintf("command=\"%s\" %s %s\n", fingerprint, keyType, k))
+			f.WriteString(fmt.Sprintf(_TPL_AUTHKEY, "gogs", fingerprint, keyType, k, "gogskey"))
 		}
 	}
 
@@ -411,6 +416,7 @@ func (c *AuthorizedKeysConfig) writeAuthorizedKeyFile(newKeys []string, filterOl
 
 // Notify server that key is now also acceptable
 func (s *Server) AddKey(key string) error {
+	//log.Printf("Key is %s", key)
 	if s.AuthorizedKeyProxy.Enabled {
 		return s.AuthorizedKeyProxy.writeAuthorizedKeyFile([]string{key}, false)
 	}
