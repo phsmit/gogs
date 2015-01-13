@@ -53,8 +53,8 @@ func init() {
 type PublicKey struct {
 	Id                int64
 	OwnerId           int64     `xorm:"UNIQUE(s) INDEX NOT NULL"`
-	Name              string    `xorm:"UNIQUE(s) NOT NULL"`
-	Fingerprint       string    `xorm:"INDEX NOT NULL"`
+	Name              string    `xorm:"NOT NULL"`
+	Fingerprint       string    `xorm:"UNIQUE(s) NOT NULL"`
 	Content           string    `xorm:"TEXT NOT NULL"`
 	Created           time.Time `xorm:"CREATED"`
 	Updated           time.Time
@@ -89,6 +89,18 @@ func AddPublicKey(key *PublicKey) (err error) {
 func GetPublicKeyById(keyId int64) (*PublicKey, error) {
 	key := new(PublicKey)
 	has, err := x.Id(keyId).Get(key)
+	if err != nil {
+		return nil, err
+	} else if !has {
+		return nil, ErrKeyNotExist
+	}
+	return key, nil
+}
+
+// GetPublicKeyById returns public key by given ID.
+func GetPublicKeyByFingerprint(fingerprint string) (*PublicKey, error) {
+	key := &PublicKey{Fingerprint: fingerprint}
+	has, err := x.Get(key)
 	if err != nil {
 		return nil, err
 	} else if !has {
