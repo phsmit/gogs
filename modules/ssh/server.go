@@ -9,7 +9,6 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -19,15 +18,32 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 
-	glog "github.com/gogits/gogs/modules/log"
+	"github.com/gogits/gogs/modules/log"
+	"github.com/gogits/gogs/modules/setting"
 )
 
-var log glog.LoggerInterface
+var Serv = Server{AuthorizedKeyProxy: AuthorizedKeysConfig{}, Host: "localhost:3022"}
+
+func init() {
+	fmt.Println("Running init")
+	usr, err := user.Current()
+	if err != nil {
+		log.Fatal(4, "No homedir found %s", err)
+	}
+	Serv.AuthorizedKeyProxy.AuthorizedKeysFile = usr.HomeDir + ".ssh/authorized_keys"
+	Serv.KeyFile = usr.HomeDir + "/.ssh/gogs.key"
+	Serv.PubKeyFile = usr.HomeDir + "/.ssh/gogs.key.pub"
+}
+
+func InitServer() {
+	setting.Cfg.Section("ssh")
+}
 
 const (
 	KeyAlgoED25519 = "ssh-ed25519"
@@ -121,9 +137,12 @@ type CallbackConfig struct {
 	HandleConnection func(key, cmd string, channel Channel, info ConnectionInfo) (uint32, error)
 }
 
+func formatFingerprint(m [md5.Size]byte) string {
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15])
+}
 func fingerprint(k ssh.PublicKey) string {
 	m := md5.Sum(k.Marshal())
-	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15])
+	return formatFingerprint(m)
 }
 
 func handleChanReq(s *Server, chanReq ssh.NewChannel, options map[string]string) {
@@ -239,7 +258,7 @@ func generateHostKey(keyFile, pubKeyFile string) error {
 	if err != nil {
 		return err
 	}
-	fPub.Write(pub.Marshal())
+	fPub.Write(ssh.MarshalAuthorizedKey(pub))
 	return nil
 }
 
@@ -274,8 +293,7 @@ func (s *Server) Start() error {
 		return err
 	}
 
-	err = s.Resync()
-	if err != nil {
+	if err = s.Resync(); err != nil {
 		return err
 	}
 
@@ -301,6 +319,8 @@ func (s *Server) Start() error {
 	if err != nil {
 		return err
 	}
+
+	log.Info("SSH (internal) listen: %s", s.socket.Addr())
 
 	go func() {
 		for {
@@ -450,8 +470,7 @@ func parseKey(content []byte, clean bool) (ok bool, key string, fingerprint stri
 	if n > 0 {
 		raw = raw[:n]
 		key = base64.StdEncoding.EncodeToString(raw)
-		h := md5.Sum(raw)
-		fingerprint = hex.EncodeToString(h[:])
+		fingerprint = formatFingerprint(md5.Sum(raw))
 	} else {
 		return
 	}

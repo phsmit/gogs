@@ -325,39 +325,31 @@ func SettingsSSHKeysPost(ctx *middleware.Context, form auth.AddSSHKeyForm) {
 			return
 		}
 
-		// Remove newline characters from form.KeyContent
-		cleanContent := strings.Replace(form.Content, "\n", "", -1)
-
-		if ok, err := models.CheckPublicKeyString(cleanContent); !ok {
-			if err == models.ErrKeyUnableVerify {
-				ctx.Flash.Info(ctx.Tr("form.unable_verify_ssh_key"))
-			} else {
-				ctx.Flash.Error(ctx.Tr("form.invalid_ssh_key", err.Error()))
-				ctx.Redirect(setting.AppSubUrl + "/user/settings/ssh")
-				return
-			}
-		}
-
-		k := &models.PublicKey{
-			OwnerId: ctx.User.Id,
-			Name:    form.SSHTitle,
-			Content: cleanContent,
-		}
-		if err := models.AddPublicKey(k); err != nil {
-			if err == models.ErrKeyAlreadyExist {
-				ctx.RenderWithErr(ctx.Tr("form.ssh_key_been_used"), SETTINGS_SSH_KEYS, &form)
-				return
-			}
-			ctx.Handle(500, "ssh.AddPublicKey", err)
-			return
-		} else {
-			log.Trace("SSH key added: %s", ctx.User.Name)
-			ctx.Flash.Success(ctx.Tr("settings.add_key_success"))
+		keyContent, fingerprint, err := models.ParseValidatePublicKeyString(form.Content)
+		if err != nil {
+			ctx.Flash.Error(ctx.Tr("form.invalid_ssh_key", err.Error()))
 			ctx.Redirect(setting.AppSubUrl + "/user/settings/ssh")
 			return
 		}
-	}
 
+		k := &models.PublicKey{
+			OwnerId:     ctx.User.Id,
+			Name:        form.SSHTitle,
+			Content:     keyContent,
+			Fingerprint: fingerprint,
+		}
+		switch err := models.AddPublicKey(k); err {
+		case nil:
+			log.Trace("SSH key added: %s", ctx.User.Name)
+			ctx.Flash.Success(ctx.Tr("settings.add_key_success"))
+			ctx.Redirect(setting.AppSubUrl + "/user/settings/ssh")
+		case models.ErrKeyAlreadyExist:
+			ctx.RenderWithErr(ctx.Tr("form.ssh_key_been_used"), SETTINGS_SSH_KEYS, &form)
+		default:
+			ctx.Handle(500, "ssh.AddPublicKey", err)
+		}
+		return
+	}
 	ctx.HTML(200, SETTINGS_SSH_KEYS)
 }
 

@@ -24,6 +24,9 @@ import (
 	"github.com/gogits/gogs/modules/middleware"
 	"github.com/gogits/gogs/modules/setting"
 	"github.com/gogits/gogs/modules/social"
+	"github.com/gogits/gogs/modules/ssh"
+
+	rssh "github.com/gogits/gogs/routers/ssh"
 )
 
 const (
@@ -46,6 +49,14 @@ func NewServices() {
 	social.NewOauthService()
 }
 
+func InitSsh() {
+	ssh.Serv.Callbacks = ssh.CallbackConfig{
+		GetKeyByFingerprint: models.GetKeyContentByFingerprint,
+		GetAllKeys:          models.GetAllKeyContents,
+		HandleConnection:    rssh.HandleConnection,
+	}
+}
+
 // GlobalInit is for global configuration reload-able.
 func GlobalInit() {
 	setting.NewConfigContext()
@@ -54,6 +65,7 @@ func GlobalInit() {
 	mailer.NewMailerContext()
 	models.LoadModelsConfig()
 	NewServices()
+	InitSsh()
 
 	if setting.InstallLock {
 		models.LoadRepoConfig()

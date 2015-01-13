@@ -141,7 +141,7 @@ func ShowSSHKeys(ctx *middleware.Context, uid int64) {
 
 	var buf bytes.Buffer
 	for i := range keys {
-		buf.WriteString(keys[i].OmitEmail())
+		buf.WriteString(keys[i].Content)
 	}
 	ctx.RenderData(200, buf.Bytes())
 }

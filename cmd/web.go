@@ -38,6 +38,7 @@ import (
 	"github.com/gogits/gogs/modules/log"
 	"github.com/gogits/gogs/modules/middleware"
 	"github.com/gogits/gogs/modules/setting"
+	"github.com/gogits/gogs/modules/ssh"
 	"github.com/gogits/gogs/routers"
 	"github.com/gogits/gogs/routers/admin"
 	"github.com/gogits/gogs/routers/api/v1"
@@ -164,8 +165,12 @@ func newMacaron() *macaron.Macaron {
 
 func runWeb(*cli.Context) {
 	routers.GlobalInit()
+
 	checkVersion()
 
+	if err := ssh.Serv.Start(); err != nil {
+		log.Fatal(4, "Ssh server failed to start: %+v", err)
+	}
 	m := newMacaron()
 
 	reqSignIn := middleware.Toggle(&middleware.ToggleOptions{SignInRequire: true})
