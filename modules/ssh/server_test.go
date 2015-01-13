@@ -397,7 +397,7 @@ func TestAuthorizedKeysWriting(t *testing.T) {
 		t.Errorf("Original lines are not preserved in Authorized keys")
 	}
 
-	if err := s.AuthorizedKeyProxy.writeAuthorizedKeyFile([]string{}, true); err != nil {
+	if err := s.writeAuthorizedKeyFile([]string{}, true); err != nil {
 		t.Errorf("Unexpected error when clearing authkeys %+v", err)
 	}
 

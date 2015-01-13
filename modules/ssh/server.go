@@ -34,7 +34,7 @@ const (
 )
 
 const (
-	_TPL_AUTHKEY = "command=\"%s serv %s\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty %s %s %s"
+	_TPL_AUTHKEY = "command=\"%s serv %s %s %s\",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty %s %s %s"
 )
 
 var (
@@ -147,7 +147,6 @@ func handleChanReq(s *Server, chanReq ssh.NewChannel, options map[string]string)
 			break
 		}
 	}
-
 
 }
 
@@ -316,7 +315,6 @@ func (s *Server) Start() error {
 			}
 			defer sshConn.Close()
 
-
 			go ssh.DiscardRequests(requests)
 
 			go func() {
@@ -353,11 +351,12 @@ func (s *Server) Start() error {
 func (s *Server) Stop() {
 	s.socket.Close()
 	if s.AuthorizedKeyProxy.Enabled {
-		s.AuthorizedKeyProxy.writeAuthorizedKeyFile([]string{}, true)
+		s.writeAuthorizedKeyFile([]string{}, true)
 	}
 }
 
-func (c *AuthorizedKeysConfig) writeAuthorizedKeyFile(newKeys []string, filterOld bool) error {
+func (s *Server) writeAuthorizedKeyFile(newKeys []string, filterOld bool) error {
+	c := s.AuthorizedKeyProxy
 	c.m.Lock()
 	defer c.m.Unlock()
 
@@ -369,7 +368,18 @@ func (c *AuthorizedKeysConfig) writeAuthorizedKeyFile(newKeys []string, filterOl
 
 	for _, key := range newKeys {
 		if ok, k, fingerprint, keyType, _ := parseKey([]byte(key), true); ok {
-			f.WriteString(fmt.Sprintf(_TPL_AUTHKEY, "gogs", fingerprint, keyType, k, "gogskey"))
+			appPath := "gogs"
+			if len(os.Args) > 0 {
+				if appPath, err = filepath.Abs(os.Args[0]); err != nil {
+					return err
+				}
+			}
+			addr := ":22"
+			if s.socket != nil {
+				addr = s.socket.Addr().String()
+			}
+
+			f.WriteString(fmt.Sprintf(_TPL_AUTHKEY, appPath, addr, s.KeyFile, fingerprint, keyType, k, "gogskey"))
 		}
 	}
 
@@ -401,7 +411,7 @@ func (c *AuthorizedKeysConfig) writeAuthorizedKeyFile(newKeys []string, filterOl
 // Notify server that key is now also acceptable
 func (s *Server) AddKey(key string) error {
 	if s.AuthorizedKeyProxy.Enabled {
-		return s.AuthorizedKeyProxy.writeAuthorizedKeyFile([]string{key}, false)
+		return s.writeAuthorizedKeyFile([]string{key}, false)
 	}
 	return nil
 }
@@ -417,7 +427,7 @@ func (s *Server) RemoveKey(key string) {
 // Ask the server to resync it's database (e.g. authorized keys file)
 func (s *Server) Resync() error {
 	if s.AuthorizedKeyProxy.Enabled {
-		return s.AuthorizedKeyProxy.writeAuthorizedKeyFile(s.Callbacks.GetAllKeys(), true)
+		return s.writeAuthorizedKeyFile(s.Callbacks.GetAllKeys(), true)
 	}
 	return nil
 }
