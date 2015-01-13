@@ -14,7 +14,6 @@ type GogsServeClient struct {
 }
 
 func (c *GogsServeClient) Run(stdin io.Reader, stdout, stderr io.Writer) error {
-	//log.Println("Run started now")
 	keyContents, err := ioutil.ReadFile(c.InternalKeyFile)
 	if err != nil {
 		return err
@@ -36,7 +35,6 @@ func (c *GogsServeClient) Run(stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	defer client.Close()
 
-	//log.Println("Client dialled")
 
 	session, err := client.NewSession()
 	if err != nil {

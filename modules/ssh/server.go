@@ -127,7 +127,6 @@ func fingerprint(k ssh.PublicKey) string {
 }
 
 func handleChanReq(s *Server, chanReq ssh.NewChannel, options map[string]string) {
-	//log.Println("Handle chan req being called")
 	if chanReq.ChannelType() != "session" {
 		chanReq.Reject(ssh.Prohibited, "channel type is not a session")
 		return
@@ -149,18 +148,15 @@ func handleChanReq(s *Server, chanReq ssh.NewChannel, options map[string]string)
 		}
 	}
 
-	//log.Printf("Channel done and handled")
 
 }
 
 // Payload: int: command size, string: command
 func handleExec(s *Server, ch ssh.Channel, req *ssh.Request, options map[string]string) {
-	//log.Printf("Exec being called %s", req.Payload)
 	command := string(req.Payload[4:])
 
 	if p, has := options["proxy"]; has && p == "y" {
 		parts := strings.SplitN(command, " ", 3)
-		//log.Println("%d parts", len(parts))
 		if len(parts) != 3 {
 			ch.Stderr().Write([]byte("Proxy error!\n"))
 			return
@@ -169,7 +165,6 @@ func handleExec(s *Server, ch ssh.Channel, req *ssh.Request, options map[string]
 		command = parts[2]
 		f := string(parts[0])
 
-		//log.Println("I'm goint to check %s", f)
 		if _, err := s.Callbacks.GetKeyByFingerprint(f); err == nil {
 			options["fingerprint"] = f
 		}
@@ -190,7 +185,6 @@ func handleExec(s *Server, ch ssh.Channel, req *ssh.Request, options map[string]
 		ch.Write([]byte(err.Error()))
 		return
 	}
-	//log.Printf("Returning from handleExec")
 }
 
 func testKeytypeSshKeygen(keyType string) (bool, error) {
@@ -205,11 +199,9 @@ func testKeytypeSshKeygen(keyType string) (bool, error) {
 	defer os.Remove(tmpPath)
 	defer os.Remove(tmpPath + ".pub")
 
-	//log.Println("ssh-keygen", "-t", keyType, "-f", tmpPath, "-q", "-N", "")
 	cmd := exec.Command("ssh-keygen", "-t", keyType, "-f", tmpPath, "-q", "-N", "")
 
 	if out, err := cmd.CombinedOutput(); err != nil {
-		//log.Println(string(out))
 		if bytes.HasPrefix(out, []byte("unknown key")) {
 			return false, nil
 		} else {
@@ -288,7 +280,6 @@ func (s *Server) Start() error {
 		return err
 	}
 
-	//log.Println("Before create config")
 	config := ssh.ServerConfig{
 		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 			if s.AuthorizedKeyProxy.Enabled {
@@ -297,7 +288,6 @@ func (s *Server) Start() error {
 				}
 			}
 			f := fingerprint(key)
-			//log.Printf("Validating key with fingerprint %s", f)
 			if _, err := s.Callbacks.GetKeyByFingerprint(f); err != nil {
 				return &ssh.Permissions{Extensions: map[string]string{}}, err
 			} else {
@@ -308,12 +298,10 @@ func (s *Server) Start() error {
 
 	config.AddHostKey(privKey)
 
-	//log.Printf("Going to listen now")
 	s.socket, err = net.Listen("tcp", s.Host)
 	if err != nil {
 		return err
 	}
-	//log.Printf("server listening on %+v", s.socket.Addr())
 
 	go func() {
 		for {
@@ -321,7 +309,6 @@ func (s *Server) Start() error {
 			if err != nil {
 				continue
 			}
-			//log.Println("Incoming connection")
 
 			sshConn, newChans, requests, err := ssh.NewServerConn(conn, &config)
 			if err != nil {
@@ -329,14 +316,11 @@ func (s *Server) Start() error {
 			}
 			defer sshConn.Close()
 
-			//log.Println("Upgraded to ssh")
 
 			go ssh.DiscardRequests(requests)
 
-			//log.Println("Connection from", sshConn.RemoteAddr())
 			go func() {
 				for chanReq := range newChans {
-					//log.Printf("chan with permissions: %+v", sshConn.Permissions)
 					go handleChanReq(s, chanReq, sshConn.Permissions.Extensions)
 				}
 			}()
@@ -416,7 +400,6 @@ func (c *AuthorizedKeysConfig) writeAuthorizedKeyFile(newKeys []string, filterOl
 
 // Notify server that key is now also acceptable
 func (s *Server) AddKey(key string) error {
-	//log.Printf("Key is %s", key)
 	if s.AuthorizedKeyProxy.Enabled {
 		return s.AuthorizedKeyProxy.writeAuthorizedKeyFile([]string{key}, false)
 	}
@@ -453,7 +436,6 @@ func parseKey(content []byte, clean bool) (ok bool, key string, fingerprint stri
 	}
 	raw := make([]byte, len(content)/4*3)
 	n, _ := base64.StdEncoding.Decode(raw, content)
-	//log.Printf("%d %x", n, raw[:n])
 
 	if n > 0 {
 		raw = raw[:n]
