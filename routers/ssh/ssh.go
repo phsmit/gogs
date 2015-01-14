@@ -24,11 +24,17 @@ var permissionMap = map[string]models.AccessType{
 }
 
 func HandleConnection(fingerprint, cmd string, channel ssh.Channel, info ssh.ConnectionInfo) (uint32, error) {
+	fatal := func(format String, args interface{}...) uint32 {
+		s := fmt.Printf(format, args...)
+		channel.Stderr().Write([]byte(s + "\n"))
+		log.GitLogger.Error(2, s)		
+	}
+
 	log.NewGitLogger(filepath.Join(setting.LogRootPath, "serv.log"))
 
 	p, err := models.GetPublicKeyByFingerprint(fingerprint)
 	if err != nil {
-		return 1, err
+		return fatal("Fingerprint not found")
 	}
 
 	user, err := models.GetUserById(p.OwnerId)
@@ -37,6 +43,9 @@ func HandleConnection(fingerprint, cmd string, channel ssh.Channel, info ssh.Con
 	}
 
 	parts := strings.SplitN(cmd, " ", 2)
+	if len(parts) < 2 {
+		return 1, nil
+	}
 	verb := parts[0]
 
 	access, ok := permissionMap[verb]
@@ -47,7 +56,7 @@ func HandleConnection(fingerprint, cmd string, channel ssh.Channel, info ssh.Con
 	}
 
 	args := parts[1]
-	repoPath := strings.Trim(args, "'")
+	repoPath := strings.Trim(args, "'/")
 	rr := strings.SplitN(repoPath, "/", 2)
 	if len(rr) != 2 {
 		fmt.Println(channel.Stderr(), "Gogs: unavailable repository", args)

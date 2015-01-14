@@ -14,17 +14,18 @@ import (
 type AccessType int
 
 const (
-	READABLE AccessType = iota + 1
+	NONE AccessType = iota
+	READABLE
 	WRITABLE
 )
 
 // Access represents the accessibility of user to repository.
 type Access struct {
 	Id       int64
-	UserName string     `xorm:"UNIQUE(s)"`
-	RepoName string     `xorm:"UNIQUE(s)"` // <user name>/<repo name>
-	Mode     AccessType `xorm:"UNIQUE(s)"`
-	Created  time.Time  `xorm:"CREATED"`
+	UserName string `xorm:"UNIQUE(s)"`
+	RepoName string `xorm:"UNIQUE(s)"` // <user name>/<repo name>
+	Mode     AccessType
+	Created  time.Time `xorm:"CREATED"`
 }
 
 // AddAccess adds new access record.
@@ -56,6 +57,21 @@ func UpdateAccessWithSession(sess *xorm.Session, access *Access) error {
 		return err
 	}
 	return nil
+}
+
+// Return the access flag for this user/repo combination
+func GetAccess(uname, repoName string) (AccessType, error) {
+	access := &Access{
+		UserName: strings.ToLower(uname),
+		RepoName: strings.ToLower(repoName),
+	}
+	has, err := x.Get(access)
+	if err != nil {
+		return NONE, err
+	} else if !has {
+		return NONE, nil
+	}
+	return access.Mode, nil
 }
 
 // HasAccess returns true if someone can read or write to given repository.

@@ -26,10 +26,6 @@ func runServ(k *cli.Context) {
 		log.Fatal("Not enough arugments")
 	}
 
-	addr := os.Args[2]
-	keyFile := os.Args[3]
-	fingerprint := os.Args[4]
-
 	client := ssh.GogsServeClient{
 		InternalKeyFile: os.Args[3],
 		Fingerprint:     os.Args[4],
@@ -37,7 +33,7 @@ func runServ(k *cli.Context) {
 		Command:         os.Getenv("SSH_ORIGINAL_COMMAND"),
 	}
 
-	status, err := client.Run(os.Stdin, os.Stdout, os.Stderr)
+	status := client.Run(os.Stdin, os.Stdout, os.Stderr)
 
-	os.Exit(int(status))
+	os.Exit(status)
 }

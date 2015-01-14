@@ -18,8 +18,6 @@ import (
 	"github.com/gogits/gogs/modules/ssh"
 )
 
-var appPath = ""
-
 var (
 	ErrKeyAlreadyExist = errors.New("Public key already exist")
 	ErrKeyNotExist     = errors.New("Public key does not exist")
@@ -28,6 +26,8 @@ var (
 var (
 	SshPath string // SSH directory.
 )
+
+var appPath = ""
 
 // homeDir returns the home directory of current user.
 func homeDir() string {
@@ -47,6 +47,8 @@ func init() {
 	if err = os.MkdirAll(SshPath, 0700); err != nil {
 		log.Fatal(4, "fail to create SshPath(%s): %v\n", SshPath, err)
 	}
+
+	appPath, _ = filepath.Abs(os.Args[0])
 }
 
 // PublicKey represents a SSH key.

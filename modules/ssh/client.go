@@ -13,15 +13,17 @@ type GogsServeClient struct {
 	Command         string
 }
 
-func (c *GogsServeClient) Run(stdin io.Reader, stdout, stderr io.Writer) (uint32, error) {
+func (c *GogsServeClient) Run(stdin io.Reader, stdout, stderr io.Writer) int {
 	keyContents, err := ioutil.ReadFile(c.InternalKeyFile)
 	if err != nil {
-		return 1, err
+		stderr.Write([]byte("Internal GOGS error\n"))
+		return 23
 	}
 
 	signer, err := ssh.ParsePrivateKey(keyContents)
 	if err != nil {
-		return 1, err
+		stderr.Write([]byte("Internal GOGS error\n"))
+		return 24
 	}
 
 	sshConfig := &ssh.ClientConfig{
@@ -31,13 +33,15 @@ func (c *GogsServeClient) Run(stdin io.Reader, stdout, stderr io.Writer) (uint32
 
 	client, err := ssh.Dial("tcp", c.Host, sshConfig)
 	if err != nil {
-		return 1, err
+		stderr.Write([]byte("Internal GOGS error\n"))
+		return 25
 	}
 	defer client.Close()
 
 	session, err := client.NewSession()
 	if err != nil {
-		return 1, err
+		stderr.Write([]byte("Internal GOGS error\n"))
+		return 26
 	}
 
 	targetStderr, _ := session.StderrPipe()
@@ -58,13 +62,14 @@ func (c *GogsServeClient) Run(stdin io.Reader, stdout, stderr io.Writer) (uint32
 	}()
 
 	err = session.Run(c.Fingerprint + " info " + c.Command)
+
 	switch err := err.(type) {
 	case nil:
-		return 0, nil
+		return 0
 	case *ssh.ExitError:
-		return uint32(err.Waitmsg.ExitStatus()), nil
+		return err.Waitmsg.ExitStatus()
 	default:
-		return 1, err
+		return 1
 	}
 
 }
